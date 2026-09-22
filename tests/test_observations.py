@@ -142,3 +142,37 @@ def test_garage_torrent_lspci_grep_output_handles_separator_and_vendors():
     assert [(device.device_type, device.driver) for device in pci["pci_devices"]] == [
         ("gpu", "nvidia"), ("audio", "snd_hda_intel"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("gpu0_driver", "gpu1_driver", "expected"),
+    [
+        ("nvidia", "nvidia", (2, 2, 0, 0)),
+        ("nvidia", "vfio-pci", (2, 1, 1, 0)),
+        ("vfio-pci", "vfio-pci", (2, 0, 2, 0)),
+        (None, "nvidia", (2, 1, 0, 1)),
+    ],
+)
+def test_two_nvidia_gpu_binding_counts_exclude_audio_functions(
+    gpu0_driver, gpu1_driver, expected,
+):
+    def driver_line(driver):
+        return f"\n\tKernel driver in use: {driver}" if driver else ""
+
+    output = (
+        "0000:09:00.0 VGA compatible controller [0300]: NVIDIA Corporation Device [10de:2204]"
+        f"{driver_line(gpu0_driver)}\n\tKernel modules: nouveau, nvidia\n"
+        "0000:09:00.1 Audio device [0403]: NVIDIA Corporation Device [10de:1aef]\n"
+        "\tKernel driver in use: snd_hda_intel\n\tKernel modules: snd_hda_intel\n"
+        "0000:0a:00.0 3D controller [0302]: NVIDIA Corporation Device [10de:2235]"
+        f"{driver_line(gpu1_driver)}\n\tKernel modules: nouveau, nvidia\n"
+        "0000:0a:00.1 Audio device [0403]: NVIDIA Corporation Device [10de:1aef]\n"
+        "\tKernel driver in use: vfio-pci\n\tKernel modules: snd_hda_intel\n"
+    )
+
+    pci = parse_pci(output)
+
+    assert (
+        pci["pci_count"], pci["nvidia_bound"], pci["vfio_bound"], pci["unbound"],
+    ) == expected
+    assert len([device for device in pci["pci_devices"] if device.device_type == "audio"]) == 2
