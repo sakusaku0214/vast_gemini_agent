@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, Final
+
+from pydantic import BaseModel
+
+from vast_agent.agent.models import (
+    CollectEvidenceArgs,
+    ExecutableQueryArgs,
+    HostArgument,
+    InspectHostArgs,
+    InterfaceInspectionArgs,
+    NetworkInspectionArgs,
+    PackageQueryArgs,
+    ProcessQueryArgs,
+    RecentIncidentsArgs,
+    ServiceQueryArgs,
+)
+from vast_agent.execution.base import Executor
+from vast_agent.models.host import Host
+from vast_agent.models.tool_result import ToolResult
+
+
+@dataclass(frozen=True)
+class HostReadCapability:
+    name: str
+    description: str
+    category: str
+    argument_model: type[BaseModel]
+    executor: str
+    required_host_capabilities: tuple[str, ...] = ()
+    risk_class: str = "READ_ONLY"
+    available: bool = True
+
+    def declaration(self) -> dict[str, object]:
+        return {
+            "type": "function", "name": self.name, "description": self.description,
+            "parameters": self.argument_model.model_json_schema(),
+        }
+
+
+HOST_READ_CAPABILITIES: Final[dict[str, HostReadCapability]] = {
+    item.name: item for item in (
+        HostReadCapability("inspect_host", "Inspect an allowlisted host scope read-only.", "diagnostics", InspectHostArgs, "legacy"),
+        HostReadCapability("collect_evidence", "Collect a fixed type of read-only evidence.", "diagnostics", CollectEvidenceArgs, "legacy"),
+        HostReadCapability("get_recent_incidents", "Read compact incident summaries when history is relevant.", "history", RecentIncidentsArgs, "legacy"),
+        HostReadCapability("query_package", "Check whether one validated Debian package is installed.", "packages", PackageQueryArgs, "generic"),
+        HostReadCapability("query_executable", "Resolve one validated executable name without exposing PATH.", "executables", ExecutableQueryArgs, "generic"),
+        HostReadCapability("query_service", "Read one validated systemd service state.", "services", ServiceQueryArgs, "generic"),
+        HostReadCapability("inspect_network", "Read bounded link, address, or route information.", "network", NetworkInspectionArgs, "generic"),
+        HostReadCapability("inspect_interface", "Read bounded details for one validated network interface.", "network", InterfaceInspectionArgs, "generic"),
+        HostReadCapability("query_process", "Check a process name; returns only count and a few PIDs.", "processes", ProcessQueryArgs, "generic"),
+        HostReadCapability("inspect_os", "Read distribution, kernel, architecture, and uptime facts.", "system", HostArgument, "generic"),
+        HostReadCapability("list_host_capabilities", "List registry READ capabilities available for this host.", "discovery", HostArgument, "discovery"),
+    )
+}
+
+FUNCTION_DECLARATIONS: Final = [
+    capability.declaration() for capability in HOST_READ_CAPABILITIES.values() if capability.available
+]
+
+
+def _run(remote: Executor, name: str, host: Host, argv: Sequence[str], timeout: int = 15) -> ToolResult:
+    execute_tool = getattr(remote, "execute_tool", None)
+    if execute_tool is not None:
+        return execute_tool(name, host, tuple(argv), timeout)
+    return remote.execute(host, tuple(argv), timeout)
+
+
+def _error(result: ToolResult) -> dict[str, object]:
+    if result.exit_code == 127:
+        code = "COMMAND_NOT_AVAILABLE"
+    else:
+        code = str(result.error_code or "COMMAND_FAILED")
+    return {"error": code, "exit_code": result.exit_code}
+
+
+def _json(result: ToolResult) -> Any:
+    if not result.success:
+        return _error(result)
+    try:
+        return json.loads(result.stdout or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return {"error": "PARSER_FAILED"}
+
+
+def _network_summary(part: str, rows: list[object]) -> list[object]:
+    """Keep useful network facts while omitting MACs, aliases, and other raw fields."""
+    bounded = [row for row in rows if isinstance(row, dict)][:32]
+    if part == "interfaces":
+        keys = ("ifindex", "ifname", "flags", "mtu", "operstate", "link_type")
+        output = []
+        for row in bounded:
+            item = {key: row.get(key) for key in keys if key in row}
+            statistics = row.get("stats64") or row.get("stats")
+            if isinstance(statistics, dict):
+                item["statistics"] = {
+                    direction: {
+                        key: values.get(key) for key in ("bytes", "packets", "errors", "dropped")
+                        if key in values
+                    }
+                    for direction in ("rx", "tx")
+                    if isinstance((values := statistics.get(direction)), dict)
+                }
+            output.append(item)
+        return output
+    if part == "addresses":
+        output = []
+        for row in bounded:
+            addresses = row.get("addr_info", [])
+            safe_addresses = [
+                {key: address.get(key) for key in ("family", "local", "prefixlen", "scope") if key in address}
+                for address in addresses[:16] if isinstance(address, dict)
+            ]
+            output.append({"ifname": row.get("ifname"), "operstate": row.get("operstate"), "addresses": safe_addresses})
+        return output
+    keys = ("dst", "gateway", "dev", "protocol", "scope", "metric", "prefsrc")
+    return [{key: row.get(key) for key in keys if key in row} for row in bounded]
+
+
+def execute_generic(name: str, args: BaseModel, host: Host, remote: Executor) -> dict[str, object]:
+    if name == "query_package":
+        package = args.package_name  # type: ignore[attr-defined]
+        result = _run(remote, name, host, ("dpkg-query", "-W", "-f=${db:Status-Status}\\t${Version}\\n", "--", package))
+        if not result.success:
+            if result.exit_code == 1:
+                return {"package": package, "installed": False, "status": "not-installed", "version": None}
+            return {"package": package, "installed": None, **_error(result)}
+        status, _, version = result.stdout.strip().partition("\t")
+        return {"package": package, "installed": status == "installed", "status": status, "version": version or None}
+    if name == "query_executable":
+        executable = args.executable_name  # type: ignore[attr-defined]
+        result = _run(remote, name, host, ("which", "--", executable))
+        if result.exit_code == 1:
+            return {"executable": executable, "exists": False, "path": None}
+        if not result.success:
+            return {"executable": executable, "exists": None, **_error(result)}
+        path = result.stdout.splitlines()[0].strip() if result.stdout.strip() else None
+        if path and (not path.startswith("/") or len(path) > 256 or any(char.isspace() for char in path)):
+            path = None
+        return {"executable": executable, "exists": bool(path), "path": path}
+    if name == "query_service":
+        supplied = args.service_name  # type: ignore[attr-defined]
+        unit = supplied if supplied.endswith(".service") else f"{supplied}.service"
+        result = _run(remote, name, host, ("systemctl", "show", unit, "--no-pager", "--property=LoadState,ActiveState,SubState,MainPID"))
+        if not result.success:
+            return {"service": unit, "exists": None, **_error(result)}
+        values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        return {"service": unit, "exists": values.get("LoadState") != "not-found", "load_state": values.get("LoadState"), "active_state": values.get("ActiveState"), "sub_state": values.get("SubState"), "main_pid": int(values.get("MainPID", "0") or 0)}
+    if name == "inspect_network":
+        scope = args.scope  # type: ignore[attr-defined]
+        commands = {"interfaces": ("ip", "-j", "link", "show"), "addresses": ("ip", "-j", "address", "show"), "routes": ("ip", "-j", "route", "show")}
+        selected = tuple(commands) if scope == "summary" else (scope,)
+        output: dict[str, object] = {"scope": scope}
+        for part in selected:
+            parsed = _json(_run(remote, f"{name}:{part}", host, commands[part]))
+            if isinstance(parsed, list):
+                parsed = _network_summary(part, parsed)
+            output[part] = parsed
+        return output
+    if name == "inspect_interface":
+        interface = args.interface_name  # type: ignore[attr-defined]
+        link = _json(_run(remote, f"{name}:link", host, ("ip", "-j", "-s", "link", "show", "dev", interface)))
+        if isinstance(link, list):
+            link = _network_summary("interfaces", link)
+        details = _run(remote, f"{name}:details", host, ("ethtool", interface))
+        safe_details = [line.strip() for line in details.stdout.splitlines() if line.strip().startswith(("Speed:", "Duplex:", "Link detected:"))]
+        result: dict[str, object] = {"interface": interface, "link": link, "details": safe_details[:8]}
+        if not details.success:
+            result["details_error"] = _error(details)["error"]
+        return result
+    if name == "query_process":
+        process = args.process_name  # type: ignore[attr-defined]
+        result = _run(remote, name, host, ("pgrep", "-x", "--", process))
+        if result.exit_code == 1:
+            return {"process": process, "running": False, "count": 0, "pids": []}
+        if not result.success:
+            return {"process": process, "running": None, **_error(result)}
+        pids = [int(line) for line in result.stdout.splitlines() if line.strip().isdigit()][:10]
+        return {"process": process, "running": bool(pids), "count": len(pids), "pids": pids}
+    if name == "inspect_os":
+        release = _run(remote, f"{name}:release", host, ("cat", "/etc/os-release"))
+        kernel = _run(remote, f"{name}:kernel", host, ("uname", "-srmo"))
+        uptime = _run(remote, f"{name}:uptime", host, ("uptime", "-p"))
+        if not release.success:
+            return _error(release)
+        allowed = {"ID", "PRETTY_NAME", "VERSION_ID"}
+        facts = {key.lower(): value.strip().strip('"') for line in release.stdout.splitlines() if "=" in line for key, value in [line.split("=", 1)] if key in allowed}
+        facts.update({"kernel": kernel.stdout.strip() if kernel.success else None, "uptime": uptime.stdout.strip() if uptime.success else None})
+        return facts
+    return {"error": "FUNCTION_NOT_ALLOWED", "function": name}
+
+
+def discover(host: Host) -> dict[str, object]:
+    capabilities = []
+    for item in HOST_READ_CAPABILITIES.values():
+        available = item.available and all(getattr(host.capabilities, cap, False) for cap in item.required_host_capabilities)
+        capabilities.append({"name": item.name, "description": item.description, "category": item.category, "risk_class": item.risk_class, "available": available})
+    return {"host": host.name, "capabilities": capabilities}

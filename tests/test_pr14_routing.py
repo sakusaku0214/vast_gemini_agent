@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from vast_agent.agent.functions import FUNCTION_DECLARATIONS
 from vast_agent.agent.gemini import ScriptedGeminiClient
 from vast_agent.agent.models import AgentResponse, InvestigationResult, Route
@@ -95,6 +97,68 @@ def test_bare_write_never_inherits_read_host(tmp_path):
     assert reply.job_id is None
     assert "WRITE" in reply.text
     assert len(agent.investigations) == 1
+
+
+def test_generic_read_followups_inherit_last_host_end_to_end(tmp_path):
+    cases = [
+        ("magのネットワーク見て", "速度は？"),
+        ("magにvnstat入ってる？", "serviceは？"),
+        ("magのOS何？", "kernelは？"),
+    ]
+    for index, (initial, followup_text) in enumerate(cases):
+        agent = RecordingAgent()
+        service = make_service(tmp_path / str(index), agent)
+
+        first = asyncio.run(service.handle_question(initial, 1, 2))
+        followup = asyncio.run(service.handle_question(followup_text, 1, 2))
+
+        assert first.job_id is not None
+        assert followup.job_id is not None
+        assert agent.investigations == [
+            ("garage-mag", initial), ("garage-mag", followup_text),
+        ]
+
+
+def test_read_anaphora_inherits_only_after_a_host_context(tmp_path):
+    agent = RecordingAgent()
+    service = make_service(tmp_path, agent)
+
+    no_context = asyncio.run(service.handle_question("NIC見て", 1, 2))
+    asyncio.run(service.handle_question("magのネットワーク見て", 1, 2))
+    with_context = asyncio.run(service.handle_question("このマシンのドライバは？", 1, 2))
+
+    assert no_context.text == "対象hostを指定してください。"
+    assert with_context.job_id is not None
+    assert agent.investigations[-1] == ("garage-mag", "このマシンのドライバは？")
+
+
+@pytest.mark.parametrize("write", [
+    "じゃあ再起動して", "止めて", "resetして", "installして",
+])
+def test_bare_mutations_never_reuse_read_context(tmp_path, write):
+    agent = RecordingAgent()
+    service = make_service(tmp_path, agent)
+    asyncio.run(service.handle_question("magのネットワーク見て", 1, 2))
+
+    reply = asyncio.run(service.handle_question(write, 1, 2))
+
+    if write != "止めて":
+        assert reply.job_id is None
+    else:
+        assert "already finished" in reply.text
+    assert reply.proposal is None
+    assert agent.investigations == [("garage-mag", "magのネットワーク見て")]
+
+
+def test_nic_definition_remains_general_without_host_context(tmp_path):
+    agent = RecordingAgent()
+    service = make_service(tmp_path, agent)
+
+    reply = asyncio.run(service.handle_question("NICって何？", 1, 2))
+
+    assert reply.text == "一般回答"
+    assert agent.general == ["NICって何？"]
+    assert agent.investigations == []
 
 
 def test_reboot_advice_is_read_only_investigation(tmp_path):
@@ -192,7 +256,33 @@ def test_routing_order_and_gemini_function_boundary(tmp_path):
     assert route_intent("magにvnstat入ってる？", registry).route == Route.AGENT
     assert route_intent("自然言語理解できる？", registry).route == Route.UNKNOWN
     assert route_intent("magを再起動して", registry).route == Route.UNSUPPORTED_WRITE
-    assert {item["name"] for item in FUNCTION_DECLARATIONS} == {
-        "inspect_host", "collect_evidence", "get_recent_incidents",
+    assert {"inspect_host", "collect_evidence", "get_recent_incidents"} <= {
+        item["name"] for item in FUNCTION_DECLARATIONS
+    }
+    assert {"query_package", "query_executable", "query_service", "inspect_network",
+            "inspect_interface", "query_process", "inspect_os"} <= {
+        item["name"] for item in FUNCTION_DECLARATIONS
     }
     assert "restart" not in json.dumps(FUNCTION_DECLARATIONS).casefold()
+
+
+@pytest.mark.parametrize(("question", "expected"), [
+    ("mag vnstatある？", "garage-mag"),
+    ("magってvnstat入れてたっけ", "garage-mag"),
+    ("Taichiのネット周り見れる？", "taichi"),
+    ("torrentのLAN変じゃね？", "garage-torrent"),
+    ("X570でdocker生きてる？", "x570"),
+    ("h12d8のOS何だっけ？", "h12d8"),
+])
+def test_natural_host_investigation_phrases_route_to_agent(question, expected):
+    hosts = [
+        Host(name="garage-mag", aliases=["mag"], address="192.0.2.1", ssh_user="agent"),
+        Host(name="taichi", aliases=["Taichi"], address="192.0.2.2", ssh_user="agent"),
+        Host(name="garage-torrent", aliases=["torrent"], address="192.0.2.3", ssh_user="agent"),
+        Host(name="x570", aliases=["X570"], address="192.0.2.4", ssh_user="agent"),
+        Host(name="h12d8", address="192.0.2.5", ssh_user="agent"),
+    ]
+    decision = route_intent(question, HostRegistry(hosts={host.name: host for host in hosts}))
+
+    assert decision.route == Route.AGENT
+    assert decision.host == expected

@@ -5,8 +5,9 @@ import time
 
 from pydantic import ValidationError
 
-from vast_agent.agent.functions import FUNCTION_DECLARATIONS, FunctionExecutor
+from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import GeminiClient
+from vast_agent.agent.host_read import FUNCTION_DECLARATIONS
 from vast_agent.agent.models import InvestigationResult
 from vast_agent.agent.prompts import GENERAL_SYSTEM_PROMPT, SYSTEM_PROMPT
 from vast_agent.config import GeminiSettings

@@ -5,7 +5,14 @@ from typing import Final
 
 from pydantic import ValidationError
 
-from vast_agent.agent.models import CollectEvidenceArgs, InspectHostArgs, RecentIncidentsArgs
+from vast_agent.agent.host_read import (
+    FUNCTION_DECLARATIONS as FUNCTION_DECLARATIONS,
+)
+from vast_agent.agent.host_read import (
+    HOST_READ_CAPABILITIES,
+    discover,
+    execute_generic,
+)
 from vast_agent.config import HostRegistry
 from vast_agent.execution.base import Executor, redact
 from vast_agent.services.inspection import InspectionService
@@ -21,16 +28,6 @@ EVIDENCE_TOOL: Final = {
     "system_health": "get_system_health",
 }
 
-FUNCTION_DECLARATIONS = [
-    {"type": "function", "name": "inspect_host", "description": "Inspect an allowlisted host scope read-only.",
-     "parameters": InspectHostArgs.model_json_schema()},
-    {"type": "function", "name": "collect_evidence", "description": "Collect a fixed type of read-only evidence.",
-     "parameters": CollectEvidenceArgs.model_json_schema()},
-    {"type": "function", "name": "get_recent_incidents", "description": "Read compact incident summaries when history is relevant.",
-     "parameters": RecentIncidentsArgs.model_json_schema()},
-]
-
-
 class FunctionExecutor:
     def __init__(self, registry: HostRegistry, inspection: InspectionService, database: Database,
                  remote: Executor, max_chars: int = 2500, secrets: tuple[str, ...] = ()) -> None:
@@ -38,12 +35,11 @@ class FunctionExecutor:
         self.remote = remote; self.max_chars = max_chars; self.secrets = secrets
 
     def execute(self, name: str, arguments: dict[str, object], target_host: str) -> dict[str, object]:
-        models = {"inspect_host": InspectHostArgs, "collect_evidence": CollectEvidenceArgs,
-                  "get_recent_incidents": RecentIncidentsArgs}
-        if name not in models:
+        capability = HOST_READ_CAPABILITIES.get(name)
+        if capability is None or not capability.available:
             return {"error": "FUNCTION_NOT_ALLOWED", "function": name}
         try:
-            args = models[name].model_validate(arguments)
+            args = capability.argument_model.model_validate(arguments)
         except ValidationError as exc:
             return {"error": "INVALID_ARGUMENTS", "details": exc.errors(include_input=False)}
         if args.host.casefold() != target_host.casefold():
@@ -52,7 +48,14 @@ class FunctionExecutor:
         except KeyError: return {"error": "HOST_NOT_FOUND"}
         if not host.enabled:
             return {"error": "HOST_DISABLED"}
-        if name == "get_recent_incidents":
+        if any(not getattr(host.capabilities, value, False)
+               for value in capability.required_host_capabilities):
+            return {"error": "TOOL_UNSUPPORTED"}
+        if name == "list_host_capabilities":
+            result = discover(host)
+        elif capability.executor == "generic":
+            result = execute_generic(name, args, host, self.remote)
+        elif name == "get_recent_incidents":
             result = {"incidents": self.database.recent_incidents(host.name, args.signature, args.limit)}
         elif name == "collect_evidence":
             tool_name = EVIDENCE_TOOL[args.evidence_type]

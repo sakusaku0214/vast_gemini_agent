@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Route(StrEnum):
@@ -42,6 +42,49 @@ class RecentIncidentsArgs(BaseModel):
     host: str
     signature: str | None = None
     limit: int = Field(default=3, ge=1, le=5)
+
+
+class HostArgument(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    host: str
+
+
+class PackageQueryArgs(HostArgument):
+    package_name: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9+.-]*$")
+
+
+class ExecutableQueryArgs(HostArgument):
+    executable_name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
+
+
+class ServiceQueryArgs(HostArgument):
+    service_name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.@-]*$")
+
+    @field_validator("service_name")
+    @classmethod
+    def safe_unit(cls, value: str) -> str:
+        if ".." in value:
+            raise ValueError("service name cannot contain '..'")
+        return value
+
+
+class NetworkInspectionArgs(HostArgument):
+    scope: Literal["summary", "interfaces", "addresses", "routes"] = "summary"
+
+
+class InterfaceInspectionArgs(HostArgument):
+    interface_name: str = Field(min_length=1, max_length=15, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+
+    @field_validator("interface_name")
+    @classmethod
+    def safe_interface(cls, value: str) -> str:
+        if ".." in value:
+            raise ValueError("interface name cannot contain '..'")
+        return value
+
+
+class ProcessQueryArgs(HostArgument):
+    process_name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
 
 
 class FunctionCall(BaseModel):
