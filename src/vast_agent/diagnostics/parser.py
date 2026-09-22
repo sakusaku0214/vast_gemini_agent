@@ -43,7 +43,20 @@ def parse_pci(text: str) -> dict[str, object]:
         "unknown_bound": 0,
         "pci_devices": [],
     }
-    blocks = re.split(r"\n(?=\S)", text.strip()) if text.strip() else []
+    # ``grep -A`` places ``--`` between non-adjacent matches.  Build blocks from
+    # PCI headers instead of treating every unindented line as a new device, so
+    # the separator cannot swallow the following device and its driver lines.
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if re.match(r"^[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]\s", line, re.I):
+            if current:
+                blocks.append("\n".join(current))
+            current = [line]
+        elif current and line.strip() != "--":
+            current.append(line)
+    if current:
+        blocks.append("\n".join(current))
     nvidia_gpu_groups = {
         block.splitlines()[0].split()[0].rsplit(".", 1)[0]
         for block in blocks
@@ -100,32 +113,58 @@ def parse_service_show(text: str) -> dict[str, str]:
 def build_observation(host: str, results: dict[str, ToolResult]) -> Observation:
     ping = results.get("host_ping")
     ssh_ok = bool(ping and ping.success)
-    gpu_result = results.get("get_gpu_status", ToolResult(success=False, duration_ms=0))
-    nvml_ok, nvml_error, devices = parse_gpu(gpu_result)
-    pci = parse_pci(results.get("get_pci_status", ToolResult(success=False, duration_ms=0)).stdout)
-    d_text = results.get("get_d_state_processes", ToolResult(success=False, duration_ms=0)).stdout
+    gpu_result = results.get("get_gpu_status")
+    nvml_ok, nvml_error, devices = (
+        parse_gpu(gpu_result) if gpu_result else (False, None, [])
+    )
+    pci_result = results.get("get_pci_status")
+    pci = parse_pci(pci_result.stdout) if pci_result else parse_pci("")
+    d_result = results.get("get_d_state_processes")
+    d_text = d_result.stdout if d_result else ""
     d_count = sum(1 for line in d_text.splitlines() if line.lstrip().startswith("D"))
-    health = results.get("get_system_health", ToolResult(success=False, duration_ms=0)).stdout
+    health_result = results.get("get_system_health")
+    health = health_result.stdout if health_result else ""
     percentages = [int(x) for x in re.findall(r"\b(\d{1,3})%", health)]
     failed = sum(1 for line in health.splitlines() if "failed" in line.lower())
-    services = parse_service_show(results.get("get_service_status", ToolResult(success=False, duration_ms=0)).stdout)
+    service_result = results.get("get_service_status")
+    services = parse_service_show(service_result.stdout) if service_result else {}
+    services_observed = [
+        name for name in ("get_service_status", "get_vast_status", "get_docker_status")
+        if name in results
+    ]
     vast = results.get("get_vast_status")
     if vast: services.update(parse_service_show(vast.stdout))
     docker = results.get("get_docker_status")
     if docker and docker.stdout.strip(): services["docker"] = docker.stdout.splitlines()[0].strip()
     observation = Observation(
-        host=host, ssh_ok=ssh_ok,
-        gpu=GpuSummary(**pci, nvml_ok=nvml_ok, nvml_error=nvml_error, devices=devices),
+        host=host, ssh_ok=ssh_ok, ssh_observed=ping is not None,
+        gpu=GpuSummary(
+            **pci,
+            nvml_observed=gpu_result is not None,
+            pci_observed=pci_result is not None,
+            pci_ok=bool(pci_result and pci_result.success),
+            nvml_ok=nvml_ok,
+            nvml_error=nvml_error,
+            devices=devices,
+        ),
         system=SystemSummary(
+            health_observed=health_result is not None,
+            d_state_observed=d_result is not None,
             d_state_processes=d_count,
             filesystem_max_percent=max(percentages) if percentages else None,
             failed_units=failed,
         ),
         services=services,
+        services_observed=services_observed,
+        observed_tools=list(results),
         details={
-            "kernel_gpu_errors": results.get("get_kernel_gpu_errors", ToolResult(success=False, duration_ms=0)).stdout[:8000],
-            "vast_logs": results.get("get_vast_logs", ToolResult(success=False, duration_ms=0)).stdout[:8000],
-            "journal_errors": results.get("get_journal_errors", ToolResult(success=False, duration_ms=0)).stdout[:8000],
+            key: results[tool].stdout[:8000]
+            for key, tool in (
+                ("kernel_gpu_errors", "get_kernel_gpu_errors"),
+                ("vast_logs", "get_vast_logs"),
+                ("journal_errors", "get_journal_errors"),
+            )
+            if tool in results
         },
     )
     from vast_agent.diagnostics.signatures import detect_signatures
