@@ -55,6 +55,12 @@ class PolicyEngine:
         if request.action_type == ActionType.HOST_REBOOT:
             if state.running_vm or state.active_workload: reasons.append("ACTIVE_WORKLOAD")
             if not state.filesystem_healthy: reasons.append("FILESYSTEM_UNHEALTHY")
+        if request.action_type == ActionType.PACKAGE_INSTALL:
+            if state.package_installed: reasons.append("PACKAGE_ALREADY_INSTALLED")
+            if not state.package_candidate: reasons.append("PACKAGE_CANDIDATE_NOT_FOUND")
+            if state.package_manager_busy is not False: reasons.append("PACKAGE_MANAGER_BUSY")
+            if state.active_workload: reasons.append("ACTIVE_WORKLOAD")
+            if state.running_vm: reasons.append("RUNNING_VM")
         if reasons: return PolicyResult(decision=PolicyDecision.BLOCK, reasons=reasons)
         warnings = []
         if request.action_type == ActionType.RESTART_DOCKER_SERVICE and state.active_workload:

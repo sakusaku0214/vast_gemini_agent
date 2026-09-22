@@ -9,6 +9,7 @@ from vast_agent.actions.models import (
     ActionType,
     ContainerParameters,
     GPUParameters,
+    PackageInstallParameters,
     PreflightSnapshot,
     ServiceParameters,
 )
@@ -137,12 +138,46 @@ class ProductionPreflightProvider:
             "evidence_complete": evidence_complete,
         }
         details = {key: redact(str(value), self.secrets) for key, value in details.items()}
+        package_installed = package_version = package_candidate = package_busy = None
+        if isinstance(request.parameters, PackageInstallParameters):
+            package = request.parameters.package_name
+            installed = self.executor.execute(
+                host, ("dpkg-query", "-W", "-f=${Status}\t${Version}\n", "--", package), 15,
+            )
+            package_installed = installed.success and installed.stdout.startswith("install ok installed\t")
+            if package_installed:
+                package_version = installed.stdout.partition("\t")[2].strip() or None
+            candidate_result = self.executor.execute(
+                host, ("apt-cache", "policy", "--", package), 15,
+            )
+            candidate_match = re.search(r"^\s*Candidate:\s*(\S+)\s*$", candidate_result.stdout, re.M)
+            if candidate_result.success and candidate_match and candidate_match.group(1) != "(none)":
+                package_candidate = candidate_match.group(1)
+            # fuser exit 0 means at least one package-manager lock is held; exit 1 means idle.
+            locks = self.executor.execute(host, (
+                "sudo", "-n", "fuser", "/var/lib/dpkg/lock-frontend", "/var/lib/dpkg/lock",
+                "/var/lib/apt/lists/lock", "/var/cache/apt/archives/lock",
+            ), 15)
+            package_busy = locks.exit_code == 0 if locks.exit_code in {0, 1} else None
+            tools = ("apt-get", "apt-cache", "dpkg-query", "fuser")
+            available = all(self.executor.execute(host, ("command", "-v", tool), 10).success
+                            for tool in tools)
+            evidence_complete = evidence_complete and candidate_result.success and available \
+                and package_busy is not None
+            target_exists, current = True, "installed" if package_installed else "not-installed"
+            details.update({
+                "package": package, "package_state": current,
+                "candidate": package_candidate or "none",
+                "package_manager": "busy" if package_busy else "idle",
+            })
         return PreflightSnapshot(
             host_enabled=True, ssh_reachable=observation.ssh_ok, sudo_available=sudo.success,
             target_exists=target_exists,
             evidence_complete=evidence_complete,
             current_state=current,
             active_workload=docker_summary.has_active_workload, running_vm=running_vm,
+            package_installed=package_installed, package_version=package_version,
+            package_candidate=package_candidate, package_manager_busy=package_busy,
             d_state=observation.system.d_state_processes > 0,
             filesystem_healthy=filesystem is not None and filesystem < 95,
             gpu_mapping_resolved=mapping, gpu_binding=gpu_binding,
@@ -167,6 +202,11 @@ class ProductionPreflightProvider:
         """Return only evidence relevant to this action and declared host capabilities."""
         common = {"host_ping"}
         action = request.action_type
+        if action == ActionType.PACKAGE_INSTALL:
+            required = common | {"get_system_health"}
+            if host.capabilities.docker: required.add("get_docker_status")
+            if host.capabilities.libvirt: required.add("get_vm_status")
+            return required
         if action == ActionType.RESTART_VAST_SERVICE:
             required = common | {"get_vast_status", "get_service_status", "get_system_health"}
             if host.capabilities.docker:

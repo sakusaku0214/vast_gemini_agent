@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ActionType(StrEnum):
+    PACKAGE_INSTALL = "PACKAGE_INSTALL"
     RESTART_VAST_SERVICE = "RESTART_VAST_SERVICE"
     RESTART_DOCKER_SERVICE = "RESTART_DOCKER_SERVICE"
     RESTART_LIBVIRT_SERVICE = "RESTART_LIBVIRT_SERVICE"
@@ -83,8 +84,23 @@ class RebootParameters(_Params):
     assessment: Literal["HOST_REBOOT_CANDIDATE"]
 
 
+class PackageInstallParameters(_Params):
+    kind: Literal["package_install"] = "package_install"
+    package_name: str = Field(min_length=1, max_length=128)
+    expected_capability: str | None = Field(default=None, max_length=128)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("package_name")
+    @classmethod
+    def validate_package_name(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9+.-]*", value):
+            raise ValueError("package_name must be a canonical Debian package name")
+        return value
+
+
 ActionParameters = Annotated[
-    ServiceParameters | ContainerParameters | GPUParameters | VMParameters | RebootParameters,
+    ServiceParameters | ContainerParameters | GPUParameters | VMParameters | RebootParameters
+    | PackageInstallParameters,
     Field(discriminator="kind"),
 ]
 
@@ -106,6 +122,10 @@ class PreflightSnapshot(BaseModel):
     current_state: str = "unknown"
     active_workload: bool = False
     running_vm: bool = False
+    package_installed: bool | None = None
+    package_version: str | None = None
+    package_candidate: str | None = None
+    package_manager_busy: bool | None = None
     d_state: bool = False
     filesystem_healthy: bool = True
     gpu_mapping_resolved: bool = True

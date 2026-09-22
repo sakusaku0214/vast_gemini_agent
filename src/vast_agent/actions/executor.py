@@ -8,6 +8,7 @@ from vast_agent.actions.models import (
     ActionType,
     ContainerParameters,
     GPUParameters,
+    PackageInstallParameters,
     ServiceParameters,
     VMParameters,
 )
@@ -35,6 +36,12 @@ class TypedActionExecutor:
     def argv(self, request: ActionRequest) -> Sequence[str]:
         ActionRegistry().validate_consistency(request)
         params = request.parameters
+        if isinstance(params, PackageInstallParameters):
+            # The package is one validated argv element. No shell or caller command is accepted.
+            return (
+                "sudo", "-n", "apt-get", "install", "-y",
+                "--no-install-recommends", "--", params.package_name,
+            )
         if isinstance(params, ServiceParameters):
             return ("sudo", "-n", "systemctl", "restart", params.service)
         if isinstance(params, ContainerParameters):

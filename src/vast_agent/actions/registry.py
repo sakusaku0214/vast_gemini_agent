@@ -5,17 +5,20 @@ from vast_agent.actions.models import (
     ActionType,
     ContainerParameters,
     GPUParameters,
+    PackageInstallParameters,
     RebootParameters,
     RiskClass,
     ServiceParameters,
     VMParameters,
 )
+from vast_agent.actions.package_catalog import package_definition
 
 
 class ActionRegistry:
     """Closed typed registry. It deliberately has no arbitrary-command entry point."""
 
     _risks = {
+        ActionType.PACKAGE_INSTALL: RiskClass.DANGEROUS,
         ActionType.RESTART_VAST_SERVICE: RiskClass.WRITE,
         ActionType.RESTART_DOCKER_SERVICE: RiskClass.DANGEROUS,
         ActionType.RESTART_LIBVIRT_SERVICE: RiskClass.DANGEROUS,
@@ -49,5 +52,12 @@ class ActionRegistry:
             valid = isinstance(request.parameters, VMParameters) and request.parameters.mode == "off"
         elif request.action_type == ActionType.HOST_REBOOT:
             valid = isinstance(request.parameters, RebootParameters)
+        elif request.action_type == ActionType.PACKAGE_INSTALL:
+            valid = isinstance(request.parameters, PackageInstallParameters)
+            if valid:
+                definition = package_definition(request.parameters.package_name)
+                valid = definition is not None and request.parameters.expected_capability in {
+                    None, definition.capability_id,
+                }
         if not valid:
             raise ValueError("action type and parameters do not match")

@@ -53,6 +53,7 @@ class ExternalToolsSettings(BaseModel):
 
 
 AllowedAction = Literal[
+    "PACKAGE_INSTALL",
     "RESTART_VAST_SERVICE",
     "RESTART_DOCKER_SERVICE",
     "RESTART_LIBVIRT_SERVICE",

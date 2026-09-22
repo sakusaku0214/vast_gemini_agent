@@ -1,5 +1,20 @@
 # Vast Gemini Agent v2
 
+## Safe capability acquisition
+
+`PACKAGE_INSTALL` is a dangerous, approval-gated typed action. It only accepts packages in the
+code-owned capability catalog (`vnstat`, `ethtool`, and `nvme-cli`); it is not exposed as a Gemini
+tool and does not accept shell commands, repositories, URLs, or arbitrary package-manager input.
+The default remains fail-closed: `operations.enabled` is `false` and `allowed_actions` is empty.
+
+To opt a deployment in, add `PACKAGE_INSTALL` to `operations.allowed_actions` and enable
+operations. Before a proposal and again after approval, the agent checks SSH and passwordless
+sudo, package status and candidate, package-manager locks, active containers, and running VMs.
+Any active workload, running VM, missing candidate, or busy package manager blocks installation.
+Approved installs use the fixed `apt-get install -y --no-install-recommends -- <package>` argv once,
+then verify the installed version and observe known executables/services without starting or
+enabling a service.
+
 Windows 11からUbuntu/Vast.aiホストを安全に観測する、Phase 0〜9の **READ ONLY** 実装です。
 Geminiは調査にだけ使用し、任意shell、再起動、GPU reset、自動修復は含みません。
 

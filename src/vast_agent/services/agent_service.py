@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from vast_agent.actions.models import (
     ActionRequest,
     ActionType,
+    PackageInstallParameters,
     ProposalStatus,
     RebootParameters,
 )
@@ -86,6 +87,17 @@ class AgentService:
         if action is not None:
             if self.actions is None:
                 return ServiceReply("WRITE operations are not configured.")
+            if isinstance(action.parameters, PackageInstallParameters) and any(
+                word in folded for word in ("なければ", "入ってないなら", "必要なら", "無ければ")
+            ):
+                state_check = await asyncio.to_thread(
+                    self.actions.preflight.collect, self.registry.resolve(action.host), action,
+                )
+                if state_check.package_installed:
+                    version = f" ({state_check.package_version})" if state_check.package_version else ""
+                    return ServiceReply(
+                        f"{action.parameters.package_name}{version} は既に導入済みです。Proposalは不要です。"
+                    )
             if action.action_type == ActionType.HOST_REBOOT and not from_recommendation:
                 if self.agent is None:
                     return ServiceReply("REBOOT_ASSESSMENT_UNAVAILABLE")
@@ -100,6 +112,14 @@ class AgentService:
             policy = "BLOCK" if proposal.status == ProposalStatus.BLOCKED else "ALLOW"
             summary = self._proposal_text(proposal, policy) + disabled
             return ServiceReply(self._clean(summary), proposal=proposal, policy=policy)
+
+        if any(word in folded for word in ("入れて", "install", "インストール")):
+            try:
+                self.registry.resolve_in_text(text)
+            except KeyError:
+                pass
+            else:
+                return ServiceReply("そのpackageは自動導入対象として未登録です。")
 
         if ("rebootすべき" in folded or "再起動すべき" in folded) and self.agent is not None:
             host, choices = self._resolve_host(text, None, state)
@@ -186,13 +206,24 @@ class AgentService:
     @staticmethod
     def _proposal_text(proposal, policy: str) -> str:
         state = proposal.preflight_summary
+        package = (f"Package: {proposal.parameters.package_name}\n"
+                   if isinstance(proposal.parameters, PackageInstallParameters) else "")
+        reason = (f"Reason: {proposal.parameters.reason}\n"
+                  if isinstance(proposal.parameters, PackageInstallParameters) else "")
+        package_preflight = ""
+        if isinstance(proposal.parameters, PackageInstallParameters):
+            package_preflight = (
+                f", package={state.current_state}, candidate={state.package_candidate or 'none'}, "
+                f"package-manager={'busy' if state.package_manager_busy else 'idle'}"
+            )
         return (f"⚠️ Proposal #{proposal.id}\nHost: {proposal.host}\n"
                 f"Action: {proposal.action_type}\nRisk: {proposal.risk_class}\n"
+                f"{package}{reason}"
                 f"Expires: {proposal.expires_at.isoformat()}\nPolicy: {policy}\n"
                 f"Preflight: SSH={'OK' if state.ssh_reachable else 'BLOCK'}, "
                 f"sudo={'OK' if state.sudo_available else 'BLOCK'}, "
                 f"target={state.current_state}, VM={'running' if state.running_vm else 'none'}, "
-                f"workload={'active' if state.active_workload else 'none'}")
+                f"workload={'active' if state.active_workload else 'none'}{package_preflight}")
 
     def _resolve_host(self, text: str, routed: str | None, state: ConversationState):
         folded = text.casefold(); matches = []
