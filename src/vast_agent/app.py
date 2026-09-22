@@ -217,7 +217,9 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_gemini_settings(paths.agent_file)
         try:
             client = GoogleInteractionsClient(key, settings.api_version)
-            client.interact(model=settings.model, inputs=[{"type": "text", "text": "Reply OK."}],
+            client.interact(model=settings.model, inputs=[{
+                "type": "user_input", "content": [{"type": "text", "text": "Reply OK."}],
+            }],
                             system_instruction=SYSTEM_PROMPT, tools=[], thinking_level="low", store=False)
         except Exception:
             print(f"Gemini API       ERROR\nModel            {settings.model}\nInteractions API ERROR"); return 2

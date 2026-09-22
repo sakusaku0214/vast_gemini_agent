@@ -82,6 +82,14 @@ GEMINI_API_KEY=your-gemini-key
 `start` は外部service managerなしでbackground processを起動し、agent logを
 `%LOCALAPPDATA%\VastGeminiAgent\logs\agent\agent.log` に保存します。PID stateに加えてprocessの
 command lineを検証するため、stale PIDや無関係なprocessは停止しません。
+processが既に消滅したstale stateは安全に削除します。Windowsで`CTRL_BREAK_EVENT`が
+`OSError`または`SystemError`になる場合は、markerで検証済みのprocessに限り、まず
+`taskkill /PID` (forceなし) へfallbackします。
+
+Interactions APIは`store: false`で使用し、初回入力の`user_input`とSDKが返した全step、
+READ-only toolの`function_result`をその順で次のrequestへreplayします。過去に初回入力を
+bare `text`で送った場合、初回が200でも2回目は`input[0]` = `UNKNOWN`として400になる
+問題がありました。現在は明示的な`user_input` / `content: [{type: text, ...}]`形式で送信します。
 
 自然文の例は `torrentのGPU温度`、`torrentなんかおかしくない？`、`ついでにPCIも`、
 `全台GPU状態見て`、`今の調査止めて`、`#184止めて`、`ジョブ見せて` です。明白な照会とfleetは

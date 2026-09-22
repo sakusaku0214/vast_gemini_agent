@@ -1,4 +1,5 @@
 import json
+import logging
 import sys
 from types import SimpleNamespace
 
@@ -47,10 +48,17 @@ def test_function_call_loop_and_usage_are_recorded(tmp_path, host):
     result = agent.investigate("test-host", "なんかおかしくない？")
     assert result.summary == "GPU evidence reviewed"
     assert client.calls == 2
+    first_input = client.requests[0]["inputs"][0]
+    assert first_input["type"] == "user_input"
+    assert first_input["content"][0]["type"] == "text"
     second_inputs = client.requests[1]["inputs"]
+    assert second_inputs[0] == first_input
+    assert second_inputs[1] == responses[0].steps[0]
+    assert second_inputs[2]["type"] == "function_result"
     assert responses[0].steps[0] in second_inputs
     function_result = next(item for item in second_inputs if item.get("type") == "function_result")
     assert function_result["call_id"] == "1"
+    assert function_result["name"] == "inspect_host"
     assert function_result["result"][0]["type"] == "text"
     with db.connect() as connection:
         assert connection.execute("SELECT count(*),sum(total_tokens) FROM token_usage").fetchone() == (2, 12)
@@ -164,8 +172,19 @@ def test_stateless_history_preserves_thought_step(tmp_path, host):
         })),
     ])
     agent.investigate("test-host", "原因を調べて")
-    assert client.requests[0]["inputs"][0]["type"] == "text"
+    assert client.requests[0]["inputs"][0]["type"] == "user_input"
     assert thought in client.requests[1]["inputs"]
+
+
+def test_investigate_provider_failure_is_logged_but_not_exposed(tmp_path, host, caplog):
+    agent, _, _, _, _ = setup_agent(tmp_path, host, [RuntimeError("provider-token-123")])
+    with caplog.at_level(logging.ERROR, logger="vast_agent.agent.orchestrator"):
+        result = agent.investigate("test-host", "原因を調べて")
+
+    assert result.summary == "Gemini unavailable. 取得済みObservationのみ表示します。"
+    assert "provider-token-123" not in result.summary
+    record = next(record for record in caplog.records if "investigate call failed" in record.message)
+    assert record.exc_info and record.exc_info[0] is RuntimeError
 
 
 def test_google_adapter_uses_official_interactions_steps_and_generation_config(monkeypatch):
