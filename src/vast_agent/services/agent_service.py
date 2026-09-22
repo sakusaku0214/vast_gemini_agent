@@ -430,10 +430,15 @@ class AgentService:
             evidence = "\n".join(f"- {item}" for item in gap.evidence) or "- 確認情報なし"
             state = {"available": "利用可能", "missing": "不足", "unknown": "確認不能"}[gap.status]
             note = ""
-            if gap.status == "missing":
-                note = f"\nCatalog候補: {definition.package_name}"
+            if gap.status == "missing" and definition.acquisition is not None:
+                if definition.acquisition.install_supported:
+                    note = f"\nCatalog候補: {definition.acquisition.package_name}"
+                else:
+                    note = "\n自動導入対象なし"
                 if definition.post_install_notes:
                     note += f"\n{definition.post_install_notes}"
+            elif gap.status == "missing":
+                note = "\n自動導入対象なし"
             gaps.append(
                 f"能力: {gap.capability_id} ({state})\n理由: {gap.reason}\n確認:\n{evidence}{note}"
             )

@@ -33,7 +33,8 @@ def acquisition_intent(text: str) -> AcquisitionIntent:
 def request_for_gap(host: str, gap: CapabilityGap) -> ActionRequest | None:
     """Bridge only confirmed, sufficiently confident catalog capabilities to typed writes."""
     definition = capability_definition(gap.capability_id)
-    if definition is None:
+    if (definition is None or definition.acquisition is None
+            or not definition.acquisition.install_supported):
         return None
     assessed = assess_gap(gap)
     if (assessed.status != "missing" or assessed.software_status != "missing"
@@ -43,7 +44,7 @@ def request_for_gap(host: str, gap: CapabilityGap) -> ActionRequest | None:
         host=host,
         action_type=ActionType.PACKAGE_INSTALL,
         parameters=PackageInstallParameters(
-            package_name=definition.package_name,
+            package_name=definition.acquisition.package_name,
             expected_capability=definition.capability_id,
             reason=f"{definition.description} capability is unavailable",
         ),

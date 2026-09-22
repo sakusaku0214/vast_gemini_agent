@@ -39,10 +39,11 @@ class ActionIntentResolver:
                 (entry for entry in CAPABILITY_PACKAGES if entry.package_name in folded), None,
             )
             if definition:
+                assert definition.acquisition is not None
                 return ActionRequest(
                     host=host.name, action_type=ActionType.PACKAGE_INSTALL,
                     parameters=PackageInstallParameters(
-                        package_name=definition.package_name,
+                        package_name=definition.acquisition.package_name,
                         expected_capability=definition.capability_id,
                         reason=f"{definition.description} capability is unavailable",
                     ),
