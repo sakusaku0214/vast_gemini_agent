@@ -9,7 +9,12 @@ from vast_agent.models.observation import (
     PciDevice,
     SystemSummary,
 )
-from vast_agent.models.tool_result import ToolResult
+from vast_agent.models.tool_result import ErrorCode, ToolResult
+
+
+def _observed(result: ToolResult | None) -> bool:
+    """Whether a tool actually ran, as opposed to being unavailable by policy/config."""
+    return result is not None and result.error_code != ErrorCode.TOOL_UNSUPPORTED
 
 
 def _integer(value: str) -> int | None:
@@ -115,10 +120,10 @@ def build_observation(host: str, results: dict[str, ToolResult]) -> Observation:
     ssh_ok = bool(ping and ping.success)
     gpu_result = results.get("get_gpu_status")
     nvml_ok, nvml_error, devices = (
-        parse_gpu(gpu_result) if gpu_result else (False, None, [])
+        parse_gpu(gpu_result) if _observed(gpu_result) else (False, None, [])
     )
     pci_result = results.get("get_pci_status")
-    pci = parse_pci(pci_result.stdout) if pci_result else parse_pci("")
+    pci = parse_pci(pci_result.stdout) if _observed(pci_result) else parse_pci("")
     d_result = results.get("get_d_state_processes")
     d_text = d_result.stdout if d_result else ""
     d_count = sum(1 for line in d_text.splitlines() if line.lstrip().startswith("D"))
@@ -130,18 +135,19 @@ def build_observation(host: str, results: dict[str, ToolResult]) -> Observation:
     services = parse_service_show(service_result.stdout) if service_result else {}
     services_observed = [
         name for name in ("get_service_status", "get_vast_status", "get_docker_status")
-        if name in results
+        if _observed(results.get(name))
     ]
     vast = results.get("get_vast_status")
-    if vast: services.update(parse_service_show(vast.stdout))
+    if _observed(vast): services.update(parse_service_show(vast.stdout))
     docker = results.get("get_docker_status")
-    if docker and docker.stdout.strip(): services["docker"] = docker.stdout.splitlines()[0].strip()
+    if _observed(docker) and docker.stdout.strip():
+        services["docker"] = docker.stdout.splitlines()[0].strip()
     observation = Observation(
         host=host, ssh_ok=ssh_ok, ssh_observed=ping is not None,
         gpu=GpuSummary(
             **pci,
-            nvml_observed=gpu_result is not None,
-            pci_observed=pci_result is not None,
+            nvml_observed=_observed(gpu_result),
+            pci_observed=_observed(pci_result),
             pci_ok=bool(pci_result and pci_result.success),
             nvml_ok=nvml_ok,
             nvml_error=nvml_error,

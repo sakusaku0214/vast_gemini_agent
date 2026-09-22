@@ -109,3 +109,28 @@ def test_cli_partial_gpu_and_pci_output_says_not_observed(tmp_path, capsys, monk
     assert "PCI=not observed, NVML=OK" in capsys.readouterr().out
     assert main(["--runtime", str(tmp_path), "inspect", "test-host", "--pci"]) == 0
     assert "PCI=1, NVML=not observed" in capsys.readouterr().out
+
+
+def test_detect_capabilities_cli_applies_without_changing_operations(tmp_path, capsys, monkeypatch):
+    assert main(["--runtime", str(tmp_path), "install"]) == 0
+    hosts = tmp_path / "config" / "hosts.yaml"
+    hosts.write_text(
+        "hosts:\n  test-host:\n    address: 192.0.2.20\n    ssh_user: tester\n",
+        encoding="utf-8",
+    )
+    fake = FakeExecutor({"host_ping": ToolResult(success=True, duration_ms=1)})
+    monkeypatch.setattr("vast_agent.app.SSHExecutor", lambda _: fake)
+    monkeypatch.setattr(
+        "vast_agent.app.detect_capabilities",
+        lambda host, executor: __import__("vast_agent.models.host", fromlist=["Capabilities"])
+        .Capabilities(nvidia=True, docker=True, libvirt=False, vast=True),
+    )
+    agent_before = (tmp_path / "config" / "agent.yaml").read_text(encoding="utf-8")
+    assert main([
+        "--runtime", str(tmp_path), "detect-capabilities", "test-host", "--apply",
+    ]) == 0
+    output = capsys.readouterr().out
+    assert "SSH: OK" in output
+    assert "libvirt: false" in output
+    assert "hosts.yaml updated" in output
+    assert (tmp_path / "config" / "agent.yaml").read_text(encoding="utf-8") == agent_before
