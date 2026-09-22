@@ -124,16 +124,6 @@ class AgentService:
         if decision.route == Route.UNKNOWN and host is None:
             if any(word in folded for word in ("ついでに", "それも", "さっき", "じゃあ", "では")):
                 return ServiceReply("対象hostを指定してください。")
-            live_topics = {
-                "天気": "天気", "ドル円": "為替", "為替": "為替", "btc": "暗号資産価格",
-                "bitcoin": "暗号資産価格", "ビットコイン": "暗号資産価格",
-            }
-            live_topic = next((label for word, label in live_topics.items() if word in folded), None)
-            if live_topic:
-                return ServiceReply(
-                    f"現在のBotにはリアルタイム{live_topic}取得toolがまだありません。"
-                    "最新値を推測して回答することはできません。",
-                )
             if self.agent is None:
                 return ServiceReply("Gemini unavailable. 一般質問に回答できません。")
             answer = await asyncio.to_thread(self.agent.answer_general, self._clean(text))

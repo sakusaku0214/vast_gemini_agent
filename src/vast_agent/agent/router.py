@@ -27,7 +27,9 @@ def route_intent(text: str, registry: HostRegistry) -> IntentDecision:
         host = registry.resolve_in_text(text)
     except KeyError:
         host = None
-    if write_mentioned or any(word in folded for word in AGENT_WORDS):
+    # Investigation language is host-specific only when a configured host is explicit.
+    # Generic requests such as "最新情報を調べて" belong to the general READ tool loop.
+    if write_mentioned or (host is not None and any(word in folded for word in AGENT_WORDS)):
         return IntentDecision(route=Route.AGENT, host=host.name if host else None, action="investigate")
     for phrase, scope in SCOPES.items():
         if phrase in folded:

@@ -25,6 +25,7 @@ from vast_agent.capabilities import apply_capabilities, detect_capabilities
 from vast_agent.config import (
     ConfigError,
     initialize_config,
+    load_external_tools_settings,
     load_gemini_settings,
     load_hosts,
     load_operations_settings,
@@ -33,6 +34,7 @@ from vast_agent.config import (
 from vast_agent.conversation.state import ConversationStore
 from vast_agent.execution.base import redact
 from vast_agent.execution.ssh import SSHExecutor
+from vast_agent.external_tools import build_general_registry
 from vast_agent.host_config import set_expected_gpu_count
 from vast_agent.inspector import GROUPS
 from vast_agent.jobs.manager import JobManager
@@ -131,7 +133,8 @@ def _secrets(paths: RuntimePaths) -> dict[str, str]:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, value = line.split("=", 1); values[key.strip()] = value.strip().strip("'\"")
-    for key in ("GEMINI_API_KEY", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID"):
+    for key in ("GEMINI_API_KEY", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID",
+                "SEARCH_API_KEY"):
         if os.environ.get(key): values[key] = os.environ[key]
     return values
 
@@ -149,8 +152,11 @@ def _agent(paths: RuntimePaths, registry, executor):
         registry, InspectionService(database, paths.observation_logs, secrets), database,
         executor, settings.max_evidence_chars_per_tool, secrets,
     )
+    general_tools = build_general_registry(load_external_tools_settings(paths.agent_file),
+                                           _secrets(paths),
+                                           max_chars=settings.max_evidence_chars_per_tool)
     return InvestigationAgent(GoogleInteractionsClient(key, settings.api_version), functions,
-                              database, settings)
+                              database, settings, general_tools)
 
 
 def _service(paths: RuntimePaths, registry, executor, owner_id: int | None = None,

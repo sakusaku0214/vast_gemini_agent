@@ -18,6 +18,12 @@ jobs:
   max_recent_jobs: 20
 conversation:
   remember_last_host: true
+external_tools:
+  default_weather_location: null
+  request_timeout_seconds: 8
+  max_response_bytes: 262144
+  # disabled is fail-closed; set brave and configure SEARCH_API_KEY to enable search.
+  search_provider: disabled
 operations:
   enabled: false
   allowed_actions: []
