@@ -172,6 +172,16 @@ def test_docker_and_vm_tool_output_produces_bounded_summaries():
     assert "not available" not in vm
 
 
+def test_restarting_docker_container_counts_as_running():
+    from vast_agent.diagnostics.parser import summarize_docker_status
+
+    summary = summarize_docker_status(
+        "active\nabc|worker|Restarting (1) 5 seconds ago|image:latest\n",
+    )
+
+    assert summary == {"total": 1, "running": 1, "stopped": 0}
+
+
 def test_routing_order_and_gemini_function_boundary(tmp_path):
     service = make_service(tmp_path)
     registry = service.registry

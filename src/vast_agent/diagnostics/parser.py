@@ -133,7 +133,7 @@ def summarize_docker_status(text: str) -> dict[str, int]:
         for line in text.splitlines()[1:]
         if len(fields := line.split("|", 3)) == 4
     ]
-    running = sum(status.startswith("up") for status in statuses)
+    running = sum(status.startswith(("up", "restarting")) for status in statuses)
     return {"total": len(statuses), "running": running, "stopped": len(statuses) - running}
 
 
