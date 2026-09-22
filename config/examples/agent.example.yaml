@@ -20,6 +20,7 @@ conversation:
   remember_last_host: true
 operations:
   enabled: false
+  allowed_actions: []
   approval_ttl_seconds: 600
   action_timeout_seconds: 60
   reboot_recovery_timeout_seconds: 300

@@ -267,6 +267,9 @@ def main(argv: list[str] | None = None) -> int:
             operations = load_operations_settings(paths.agent_file)
             print(f"Hosts       {len(registry.hosts)}\nJobs        {database.running_job_count()} running")
             print(f"Operations  {'enabled' if operations.enabled else 'disabled'}")
+            if operations.enabled:
+                allowed = ", ".join(operations.allowed_actions) or "none"
+                print(f"Allowed     {allowed}")
             print(f"Approvals   {database.pending_approval_count()} pending")
             return 0
         print(message); return 0 if ok else 2
