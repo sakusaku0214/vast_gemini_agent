@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from vast_agent.actions.models import ActionRequest, ActionType, RiskClass, ServiceParameters
+from vast_agent.actions.models import (
+    ActionRequest,
+    ActionType,
+    ContainerParameters,
+    GPUParameters,
+    RebootParameters,
+    RiskClass,
+    ServiceParameters,
+    VMParameters,
+)
 
 
 class ActionRegistry:
@@ -27,5 +36,18 @@ class ActionRegistry:
             ActionType.RESTART_LIBVIRT_SERVICE: "libvirtd.service",
         }
         service = expected.get(request.action_type)
-        if service and (not isinstance(request.parameters, ServiceParameters) or request.parameters.service != service):
-            raise ValueError("action type and service target do not match")
+        valid = False
+        if service:
+            valid = isinstance(request.parameters, ServiceParameters) and request.parameters.service == service
+        elif request.action_type == ActionType.RESTART_VAST_CONTAINER:
+            valid = isinstance(request.parameters, ContainerParameters)
+        elif request.action_type == ActionType.GPU_RESET:
+            valid = isinstance(request.parameters, GPUParameters)
+        elif request.action_type == ActionType.VM_MODE_ENABLE:
+            valid = isinstance(request.parameters, VMParameters) and request.parameters.mode == "on"
+        elif request.action_type == ActionType.VM_MODE_DISABLE:
+            valid = isinstance(request.parameters, VMParameters) and request.parameters.mode == "off"
+        elif request.action_type == ActionType.HOST_REBOOT:
+            valid = isinstance(request.parameters, RebootParameters)
+        if not valid:
+            raise ValueError("action type and parameters do not match")

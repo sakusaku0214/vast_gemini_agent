@@ -27,6 +27,7 @@ class PolicyEngine:
         if not state.ssh_reachable: reasons.append("SSH_UNREACHABLE")
         if not state.sudo_available: reasons.append("SUDO_NOT_AVAILABLE")
         if not state.target_exists: reasons.append("TARGET_NOT_FOUND")
+        if not state.evidence_complete: reasons.append("PREFLIGHT_INCOMPLETE")
         if request.action_type == ActionType.GPU_RESET:
             if not state.gpu_mapping_resolved: reasons.append("GPU_MAPPING_UNRESOLVED")
             if state.gpu_binding != "nvidia": reasons.append("GPU_OWNERSHIP_UNSAFE")

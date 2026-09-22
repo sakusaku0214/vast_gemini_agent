@@ -29,7 +29,7 @@ class ActionIntentResolver:
             if context_host and re.fullmatch(r"\s*C\.[0-9]+\s*(?:を)?再起動して\s*", text):
                 host = self.hosts.resolve(context_host)
             else: return None
-        container = re.search(r"\b(C\.[0-9]+)\b", text)
+        container = re.search(r"(?<![A-Za-z0-9_])(C\.[0-9]+)(?![0-9])", text)
         if container and "再起動" in text:
             return ActionRequest(host=host.name, action_type=ActionType.RESTART_VAST_CONTAINER,
                                  parameters=ContainerParameters(container=container.group(1)))

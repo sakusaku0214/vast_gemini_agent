@@ -25,7 +25,10 @@ class ApprovalView(discord.ui.View):
             self.coordinator.approve, self.proposal_id, user_id=interaction.user.id,
             channel_id=channel_id, is_bot=interaction.user.bot,
         )
-        if ok or message != "NOT_AUTHORIZED": self._disable()
+        if message == "NOT_AUTHORIZED":
+            await interaction.response.send_message("OWNERのみ承認できます。", ephemeral=True)
+            return
+        self._disable()
         await interaction.response.edit_message(content=message, view=self)
 
     async def _reject(self, interaction: discord.Interaction) -> None:
@@ -34,6 +37,9 @@ class ApprovalView(discord.ui.View):
             self.coordinator.reject, self.proposal_id, user_id=interaction.user.id,
             channel_id=channel_id, is_bot=interaction.user.bot,
         )
+        if message == "NOT_AUTHORIZED":
+            await interaction.response.send_message("OWNERのみ拒否できます。", ephemeral=True)
+            return
         if ok: self._disable()
         await interaction.response.edit_message(content=message, view=self)
 

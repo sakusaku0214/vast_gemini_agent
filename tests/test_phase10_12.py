@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from datetime import UTC, datetime, timedelta
 
@@ -49,7 +50,7 @@ def setup(tmp_path, *, enabled=True, state=None, verifier=True):
     host = Host(name="torrent", address="192.0.2.1", ssh_user="agent")
     hosts = HostRegistry(hosts={host.name: host})
     settings = OperationsSettings(enabled=enabled)
-    state = state or PreflightSnapshot(ssh_reachable=True, sudo_available=True, target_exists=True)
+    state = state or PreflightSnapshot(ssh_reachable=True, sudo_available=True, target_exists=True, evidence_complete=True)
     remote = RecordingExecutor()
     coordinator = ActionCoordinator(db, hosts, settings, FakePreflight(state),
         TypedActionExecutor(remote, settings), Verifier(verifier), 7, 9)
@@ -107,7 +108,7 @@ def test_typed_parameter_injection_rejected():
 
 
 def test_gpu_and_vm_policy_blocks(tmp_path):
-    unsafe = PreflightSnapshot(ssh_reachable=True, sudo_available=True, target_exists=True,
+    unsafe = PreflightSnapshot(ssh_reachable=True, sudo_available=True, target_exists=True, evidence_complete=True,
                                gpu_binding="vfio", gpu_processes=True)
     _, c, remote = setup(tmp_path, state=unsafe)
     request = ActionRequest(host="torrent", action_type=ActionType.GPU_RESET,
@@ -150,3 +151,216 @@ def test_lock_write_excludes_read():
     a, b = threading.Thread(target=writer), threading.Thread(target=reader)
     a.start(); b.start(); entered.wait(); assert order == []; release.set(); a.join(); b.join()
     assert order == ["write", "read"]
+
+@pytest.mark.parametrize(("action_type", "parameters"), [
+    (ActionType.RESTART_VAST_SERVICE, GPUParameters(gpu_index=0)),
+    (ActionType.RESTART_DOCKER_SERVICE, ContainerParameters(container="C.1")),
+    (ActionType.RESTART_LIBVIRT_SERVICE, VMParameters(mode="off")),
+    (ActionType.RESTART_VAST_CONTAINER, GPUParameters(gpu_index=0)),
+    (ActionType.GPU_RESET, ContainerParameters(container="C.1")),
+    (ActionType.VM_MODE_ENABLE, VMParameters(mode="off")),
+    (ActionType.VM_MODE_DISABLE, VMParameters(mode="on")),
+    (ActionType.HOST_REBOOT, ServiceParameters(service="vastai.service")),
+])
+def test_every_action_parameter_mismatch_rejected_before_proposal(tmp_path, action_type, parameters):
+    _, coordinator, remote = setup(tmp_path)
+    request = ActionRequest(host="torrent", action_type=action_type, parameters=parameters)
+    with pytest.raises(ValueError, match="do not match"):
+        coordinator.propose(request, "7")
+    with pytest.raises(ValueError, match="do not match"):
+        coordinator.executor.execute(coordinator.hosts.resolve("torrent"), request)
+    assert remote.calls == []
+
+
+def test_preflight_change_invalidates_without_write(tmp_path):
+    db, coordinator, remote = setup(tmp_path)
+    proposal = coordinator.propose(service_request(), "7")
+    coordinator.preflight.state = coordinator.preflight.state.model_copy(update={"current_state": "changed"})
+    assert coordinator.approve(proposal.id, user_id=7, channel_id=9) == (False, "PREFLIGHT_CHANGED")
+    assert remote.calls == []
+    assert db.get_action_proposal(proposal.id)["status"] == "INVALIDATED"
+
+
+def test_incomplete_evidence_is_blocked(tmp_path):
+    state = PreflightSnapshot(ssh_reachable=True, sudo_available=True, target_exists=True,
+                              evidence_complete=False)
+    _, coordinator, remote = setup(tmp_path, state=state)
+    proposal = coordinator.propose(service_request(), "7")
+    assert proposal.status == "BLOCKED"
+    assert remote.calls == []
+
+
+def test_reboot_approval_uses_dedicated_pipeline_once(tmp_path):
+    from vast_agent.actions.reboot import RebootCoordinator
+    db, coordinator, _ = setup(tmp_path)
+    now = [0.0]
+    reboot_remote = RebootRemote([True, False, True])
+    coordinator.reboot = RebootCoordinator(reboot_remote, timeout=3, poll_seconds=1,
+        clock=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
+    request = ActionRequest(host="torrent", action_type=ActionType.HOST_REBOOT,
+        parameters={"kind": "reboot", "assessment": "HOST_REBOOT_CANDIDATE"})
+    proposal = coordinator.propose(request, "7")
+    assert coordinator.approve(proposal.id, user_id=7, channel_id=9)[0]
+    assert reboot_remote.calls == 1
+    assert db.get_action_proposal(proposal.id)["status"] == "SUCCEEDED"
+
+
+def test_reboot_definite_dispatch_failure_does_not_monitor():
+    from vast_agent.actions.reboot import RebootCoordinator
+    from vast_agent.models.tool_result import ErrorCode
+    class Denied(RebootRemote):
+        def dispatch(self, host):
+            self.calls += 1
+            return ToolResult(success=False, duration_ms=1, stderr="sudo: a password is required",
+                              error_code=ErrorCode.COMMAND_FAILED)
+        def reachable(self, host): raise AssertionError("must not monitor")
+    remote = Denied([])
+    result = RebootCoordinator(remote).execute_approved(
+        Host(name="x", address="192.0.2.2", ssh_user="a"))
+    assert result.result == RebootResult.DISPATCH_FAILED
+    assert remote.calls == 1
+
+def test_agent_service_write_request_returns_proposal_without_write(tmp_path):
+    from vast_agent.conversation.state import ConversationStore
+    from vast_agent.jobs.manager import JobManager
+    from vast_agent.services.agent_service import AgentService
+    db, coordinator, remote = setup(tmp_path)
+    service = AgentService(coordinator.hosts, object(), remote, JobManager(db),
+                           ConversationStore(db), actions=coordinator)
+    reply = asyncio.run(service.handle_question("torrentのvastai再起動して", 7, 9))
+    assert reply.proposal is not None
+    assert "Proposal #" in reply.text
+    assert "RESTART_VAST_SERVICE" in reply.text
+    assert remote.calls == []
+
+
+def test_agent_service_fleet_write_creates_no_proposal(tmp_path):
+    from vast_agent.conversation.state import ConversationStore
+    from vast_agent.jobs.manager import JobManager
+    from vast_agent.services.agent_service import AgentService
+    db, coordinator, remote = setup(tmp_path)
+    service = AgentService(coordinator.hosts, object(), remote, JobManager(db),
+                           ConversationStore(db), actions=coordinator)
+    reply = asyncio.run(service.handle_question("全台再起動して", 7, 9))
+    assert reply.proposal is None
+    assert "fleet WRITE" in reply.text
+    assert db.pending_approval_count() == 0
+    assert remote.calls == []
+
+
+@pytest.mark.parametrize("recommendation", ["CONTINUE_OBSERVING", "PHYSICAL_CHECK_REQUIRED"])
+def test_reboot_non_candidate_creates_no_proposal(tmp_path, recommendation):
+    from types import SimpleNamespace
+
+    from vast_agent.conversation.state import ConversationStore
+    from vast_agent.jobs.manager import JobManager
+    from vast_agent.services.agent_service import AgentService
+    class Agent:
+        def investigate(self, host, text):
+            return SimpleNamespace(summary="safe", signatures=[], recommended_action=recommendation,
+                                   confidence="high")
+    db, coordinator, remote = setup(tmp_path)
+    service = AgentService(coordinator.hosts, object(), remote, JobManager(db),
+                           ConversationStore(db), agent=Agent(), actions=coordinator)
+    reply = asyncio.run(service.handle_question("torrent再起動して", 7, 9))
+    assert reply.proposal is None
+    assert db.pending_approval_count() == 0
+    assert remote.calls == []
+
+
+def test_reboot_gemini_unavailable_creates_no_proposal(tmp_path):
+    from vast_agent.conversation.state import ConversationStore
+    from vast_agent.jobs.manager import JobManager
+    from vast_agent.services.agent_service import AgentService
+    db, coordinator, remote = setup(tmp_path)
+    service = AgentService(coordinator.hosts, object(), remote, JobManager(db),
+                           ConversationStore(db), actions=coordinator)
+    reply = asyncio.run(service.handle_question("torrent再起動して", 7, 9))
+    assert reply.text == "REBOOT_ASSESSMENT_UNAVAILABLE"
+    assert reply.proposal is None and not remote.calls
+
+
+def test_action_restart_reconciliation_never_replays(tmp_path):
+    db, coordinator, remote = setup(tmp_path)
+    pending = coordinator.propose(service_request(), "7")
+    assert db.reconcile_actions() == 1
+    assert db.get_action_proposal(pending.id)["status"] == "INTERRUPTED"
+    assert coordinator.approve(pending.id, user_id=7, channel_id=9)[0] is False
+    assert remote.calls == []
+
+
+def test_action_preflight_and_verification_are_redacted_in_database(tmp_path):
+    secret = "super-secret-token"
+    db = Database(tmp_path / "db.sqlite"); db.migrate()
+    host = Host(name="torrent", address="192.0.2.1", ssh_user="agent")
+    hosts = HostRegistry(hosts={host.name: host})
+    settings = OperationsSettings(enabled=True)
+    state = PreflightSnapshot(ssh_reachable=True, sudo_available=True, target_exists=True,
+                              evidence_complete=True, details={"diagnostic": secret})
+    remote = RecordingExecutor()
+    class SecretVerifier:
+        def verify(self, host, request):
+            return VerificationResult(success=True, status="VERIFIED", summary=secret)
+    coordinator = ActionCoordinator(db, hosts, settings, FakePreflight(state),
+        TypedActionExecutor(remote, settings), SecretVerifier(), 7, 9, secrets=(secret,))
+    proposal = coordinator.propose(service_request(), "7")
+    assert secret not in str(db.get_action_proposal(proposal.id))
+    assert coordinator.approve(proposal.id, user_id=7, channel_id=9)[0]
+    with db.connect() as connection:
+        run = connection.execute("SELECT verify_summary FROM action_runs").fetchone()[0]
+    assert secret not in run and "[REDACTED]" in run
+
+
+def test_required_natural_language_actions_and_advisories():
+    from vast_agent.actions.resolver import ActionIntentResolver
+    taichi = Host(name="taichi", aliases=["Taichi"], address="192.0.2.3", ssh_user="a")
+    torrent = Host(name="torrent", address="192.0.2.4", ssh_user="a")
+    resolver = ActionIntentResolver(HostRegistry(hosts={"taichi": taichi, "torrent": torrent}))
+    cases = {
+        "torrentのvastai再起動して": ActionType.RESTART_VAST_SERVICE,
+        "C.51729761再起動して": ActionType.RESTART_VAST_CONTAINER,
+        "TaichiのGPU0 resetして": ActionType.GPU_RESET,
+        "TaichiのVMをonにして": ActionType.VM_MODE_ENABLE,
+        "TaichiのVMをoffにして": ActionType.VM_MODE_DISABLE,
+        "torrent再起動して": ActionType.HOST_REBOOT,
+    }
+    for text, expected in cases.items():
+        request = resolver.resolve(text, "torrent")
+        assert request is not None and request.action_type == expected
+    assert resolver.resolve("torrentはrebootすべき？") is None
+    assert resolver.resolve("GPU reset必要？") is None
+    assert resolver.resolve("GPU resetして") is None
+    assert resolver.resolve("全台再起動して") is None
+
+
+def test_production_service_shares_job_and_write_lock(tmp_path):
+    from vast_agent.app import _service
+    from vast_agent.config import initialize_config
+    from vast_agent.paths import RuntimePaths
+    paths = RuntimePaths(tmp_path / "runtime")
+    initialize_config(paths)
+    host = Host(name="torrent", address="192.0.2.4", ssh_user="a")
+    service = _service(paths, HostRegistry(hosts={"torrent": host}), RecordingExecutor(), 7, 9)
+    assert service.actions is not None
+    assert service.actions.locks is service.jobs.locks
+
+
+def test_unique_followup_creates_proposal_but_never_immediate_write(tmp_path):
+    from types import SimpleNamespace
+
+    from vast_agent.conversation.state import ConversationStore
+    from vast_agent.jobs.manager import JobManager
+    from vast_agent.services.agent_service import AgentService
+    class Agent:
+        def investigate(self, host, text):
+            return SimpleNamespace(summary="candidate", signatures=[],
+                recommended_action="HOST_REBOOT_CANDIDATE", confidence="high")
+    db, coordinator, remote = setup(tmp_path)
+    service = AgentService(coordinator.hosts, object(), remote, JobManager(db),
+                           ConversationStore(db), agent=Agent(), actions=coordinator)
+    advisory = asyncio.run(service.handle_question("torrentはrebootすべき？", 7, 9))
+    assert advisory.proposal is None
+    followup = asyncio.run(service.handle_question("それやって", 7, 9))
+    assert followup.proposal is not None
+    assert followup.proposal.action_type == ActionType.HOST_REBOOT
+    assert remote.calls == []

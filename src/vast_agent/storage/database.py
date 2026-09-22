@@ -167,13 +167,18 @@ class Database:
         return dict(row) if row else None
 
     def save_conversation(self, owner: str, channel: str, host: str | None,
-                          job_id: int | None, scope: str | None) -> None:
+                          job_id: int | None, scope: str | None,
+                          recommended_action: str | None = None) -> None:
         with self.connect() as db:
             db.execute(
-                "INSERT INTO conversation_state VALUES(?,?,?,?,?,?) ON CONFLICT(owner_id,channel_id) "
+                "INSERT INTO conversation_state(owner_id,channel_id,last_host,last_job_id,last_scope,"
+                "updated_at,last_recommended_action) VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(owner_id,channel_id) "
                 "DO UPDATE SET last_host=excluded.last_host,last_job_id=excluded.last_job_id,"
-                "last_scope=excluded.last_scope,updated_at=excluded.updated_at",
-                (owner, channel, host, job_id, scope, datetime.now(UTC).isoformat()),
+                "last_scope=excluded.last_scope,updated_at=excluded.updated_at,"
+                "last_recommended_action=excluded.last_recommended_action",
+                (owner, channel, host, job_id, scope, datetime.now(UTC).isoformat(),
+                 recommended_action),
             )
 
     def create_action_proposal(self, proposal: ActionProposal) -> int:

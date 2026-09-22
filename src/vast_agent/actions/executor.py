@@ -11,6 +11,7 @@ from vast_agent.actions.models import (
     ServiceParameters,
     VMParameters,
 )
+from vast_agent.actions.registry import ActionRegistry
 from vast_agent.config import OperationsSettings
 from vast_agent.execution.base import Executor
 from vast_agent.models.host import Host
@@ -25,12 +26,14 @@ class TypedActionExecutor:
         self._settings = settings
 
     def execute(self, host: Host, request: ActionRequest) -> ToolResult:
+        ActionRegistry().validate_consistency(request)
         if request.action_type == ActionType.HOST_REBOOT:
             raise ValueError("HOST_REBOOT must use RebootCoordinator")
         argv = self.argv(request)
         return self._remote.execute(host, argv, self._settings.action_timeout_seconds)
 
     def argv(self, request: ActionRequest) -> Sequence[str]:
+        ActionRegistry().validate_consistency(request)
         params = request.parameters
         if isinstance(params, ServiceParameters):
             return ("sudo", "-n", "systemctl", "restart", params.service)

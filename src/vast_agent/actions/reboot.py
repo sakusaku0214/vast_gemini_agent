@@ -12,6 +12,7 @@ from vast_agent.models.tool_result import ToolResult
 
 
 class RebootResult(StrEnum):
+    DISPATCH_FAILED = "DISPATCH_FAILED"
     SUCCEEDED = "SUCCEEDED"
     REBOOT_NOT_OBSERVED = "REBOOT_NOT_OBSERVED"
     REBOOT_RECOVERY_FAILED = "REBOOT_RECOVERY_FAILED"
@@ -42,7 +43,10 @@ class RebootCoordinator:
     def execute_approved(self, host: Host) -> RebootTrace:
         states = ["COMMAND_DISPATCHED"]
         # Disconnect/non-zero after dispatch is not enough to conclude that dispatch failed.
-        self.remote.dispatch(host)  # exactly once; point of no return
+        dispatch = self.remote.dispatch(host)  # exactly once; point of no return
+        if not dispatch.success and self._definitely_not_dispatched(dispatch):
+            return RebootTrace(result=RebootResult.DISPATCH_FAILED, states=[],
+                               summary="Reboot command was not dispatched")
         deadline = self.clock() + self.timeout
         down = False
         while self.clock() < deadline:
@@ -65,6 +69,20 @@ class RebootCoordinator:
         return RebootTrace(result=RebootResult.REBOOT_RECOVERY_FAILED, states=states,
                            summary="SSH did not recover; physical handling may be required; "
                                    "automated power recovery was not attempted")
+
+    @staticmethod
+    def _definitely_not_dispatched(result: ToolResult) -> bool:
+        if result.success or result.timed_out:
+            return False
+        if result.error_code and result.error_code.value in {
+            "SSH_HOST_KEY_UNKNOWN", "SSH_HOST_KEY_CHANGED",
+        }:
+            return True
+        message = result.stderr.casefold()
+        return any(token in message for token in (
+            "permission denied", "sudo:", "could not resolve hostname", "connection refused",
+            "no such file", "not found",
+        ))
 
 
 class SSHRebootRemote:

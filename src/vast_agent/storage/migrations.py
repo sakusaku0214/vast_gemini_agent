@@ -70,4 +70,7 @@ MIGRATIONS: tuple[str, ...] = (
       FOREIGN KEY(run_id) REFERENCES action_runs(id)
     );
     """,
+    """
+    ALTER TABLE conversation_state ADD COLUMN last_recommended_action TEXT;
+    """,
 )

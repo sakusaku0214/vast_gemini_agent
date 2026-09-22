@@ -102,6 +102,7 @@ class PreflightSnapshot(BaseModel):
     ssh_reachable: bool = False
     sudo_available: bool = False
     target_exists: bool = False
+    evidence_complete: bool = False
     current_state: str = "unknown"
     active_workload: bool = False
     running_vm: bool = False

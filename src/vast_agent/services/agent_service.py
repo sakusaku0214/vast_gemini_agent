@@ -4,6 +4,13 @@ import asyncio
 import re
 from dataclasses import dataclass
 
+from vast_agent.actions.models import (
+    ActionRequest,
+    ActionType,
+    ProposalStatus,
+    RebootParameters,
+)
+from vast_agent.actions.resolver import ActionIntentResolver
 from vast_agent.agent.models import Route
 from vast_agent.agent.router import route_intent
 from vast_agent.config import HostRegistry
@@ -20,6 +27,8 @@ class ServiceReply:
     text: str
     job_id: int | None = None
     ignored: bool = False
+    proposal: object | None = None
+    policy: str | None = None
 
 
 class AgentService:
@@ -28,12 +37,14 @@ class AgentService:
     def __init__(self, registry: HostRegistry, inspection: InspectionService, executor,
                  jobs: JobManager, conversations: ConversationStore, agent=None,
                  max_parallel_hosts: int = 3, secrets: tuple[str, ...] = (),
-                 remember_last_host: bool = True) -> None:
+                 remember_last_host: bool = True, actions=None) -> None:
         self.registry = registry; self.inspection = inspection; self.executor = executor
         self.jobs = jobs; self.conversations = conversations; self.agent = agent
         self.max_parallel_hosts = max_parallel_hosts
         self.secrets = secrets
         self.remember_last_host = remember_last_host
+        self.actions = actions
+        self.action_resolver = ActionIntentResolver(registry)
 
     async def handle_question(self, text: str, owner: int | str = "cli",
                               channel: int | str = "cli") -> ServiceReply:
@@ -53,9 +64,52 @@ class AgentService:
                     return ServiceReply(f"停止対象を指定してください。実行中: {candidates}")
                 target = int(running[0]["id"])
             return ServiceReply(f"Job #{target}: {self.jobs.cancel(target)}", target)
+        if self._is_fleet(folded) and any(word in folded for word in ("再起動", "restart", "reset", "リセット", "reboot")):
+            return ServiceReply("fleet WRITEは禁止されています。対象hostを1台指定してください。")
         if self._is_fleet(folded):
             scope = "gpu" if "gpu" in folded else "vast" if "vast" in folded else "system"
             return await self._fleet(self._clean(text), scope, state, owner, channel)
+
+        from_recommendation = folded in {"それやって", "それをやって"}
+        if from_recommendation:
+            if state.last_recommended_action == "HOST_REBOOT_CANDIDATE" and state.last_host:
+                action = ActionRequest(
+                    host=state.last_host, action_type=ActionType.HOST_REBOOT,
+                    parameters=RebootParameters(assessment="HOST_REBOOT_CANDIDATE"),
+                )
+            else:
+                return ServiceReply("対象actionが一意ではありません。hostと操作を指定してください。")
+        else:
+            action = self.action_resolver.resolve(text, state.last_host)
+
+        if action is not None:
+            if self.actions is None:
+                return ServiceReply("WRITE operations are not configured.")
+            if action.action_type == ActionType.HOST_REBOOT and not from_recommendation:
+                if self.agent is None:
+                    return ServiceReply("REBOOT_ASSESSMENT_UNAVAILABLE")
+                assessment = await asyncio.to_thread(self.agent.investigate, action.host,
+                                                     self._clean(text))
+                if assessment.recommended_action != "HOST_REBOOT_CANDIDATE":
+                    return ServiceReply(self._clean(self._format_investigation(action.host, assessment)))
+            proposal = await asyncio.to_thread(self.actions.propose, action, str(owner))
+            state.last_host = action.host
+            self.conversations.save(owner, channel, state)
+            disabled = "\n⛔ Operations disabled: approval cannot execute." if not self.actions.settings.enabled else ""
+            policy = "BLOCK" if proposal.status == ProposalStatus.BLOCKED else "ALLOW"
+            summary = self._proposal_text(proposal, policy) + disabled
+            return ServiceReply(self._clean(summary), proposal=proposal, policy=policy)
+
+        if ("rebootすべき" in folded or "再起動すべき" in folded) and self.agent is not None:
+            host, choices = self._resolve_host(text, None, state)
+            if host is None or choices:
+                return ServiceReply("対象hostを1台指定してください。")
+            assessment = await asyncio.to_thread(self.agent.investigate, host.name,
+                                                 self._clean(text))
+            state.last_host = host.name
+            state.last_recommended_action = assessment.recommended_action
+            self.conversations.save(owner, channel, state)
+            return ServiceReply(self._clean(self._format_investigation(host.name, assessment)))
 
         decision = route_intent(text, self.registry)
         if decision.route == Route.UNSUPPORTED_WRITE:
@@ -112,6 +166,17 @@ class AgentService:
 
     def _clean(self, value: str) -> str:
         return redact(value, self.secrets)
+
+    @staticmethod
+    def _proposal_text(proposal, policy: str) -> str:
+        state = proposal.preflight_summary
+        return (f"⚠️ Proposal #{proposal.id}\nHost: {proposal.host}\n"
+                f"Action: {proposal.action_type}\nRisk: {proposal.risk_class}\n"
+                f"Expires: {proposal.expires_at.isoformat()}\nPolicy: {policy}\n"
+                f"Preflight: SSH={'OK' if state.ssh_reachable else 'BLOCK'}, "
+                f"sudo={'OK' if state.sudo_available else 'BLOCK'}, "
+                f"target={state.current_state}, VM={'running' if state.running_vm else 'none'}, "
+                f"workload={'active' if state.active_workload else 'none'}")
 
     def _resolve_host(self, text: str, routed: str | None, state: ConversationState):
         folded = text.casefold(); matches = []
