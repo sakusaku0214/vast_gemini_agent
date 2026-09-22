@@ -7,10 +7,12 @@ from vast_agent.actions.models import (
     ActionType,
     ContainerParameters,
     GPUParameters,
+    PackageInstallParameters,
     RebootParameters,
     ServiceParameters,
     VMParameters,
 )
+from vast_agent.actions.package_catalog import CAPABILITY_PACKAGES
 from vast_agent.config import HostRegistry
 
 
@@ -31,6 +33,26 @@ class ActionIntentResolver:
             if context_host and re.fullmatch(r"\s*C\.[0-9]+\s*(?:を)?再起動して\s*", text):
                 host = self.hosts.resolve(context_host)
             else: return None
+        if any(word in text.casefold() for word in ("入れて", "install", "インストール")):
+            folded = text.casefold()
+            definition = next(
+                (entry for entry in CAPABILITY_PACKAGES if entry.package_name in folded), None,
+            )
+            if definition is None and any(term in folded for term in ("通信量", "traffic history")):
+                definition = next(
+                    entry for entry in CAPABILITY_PACKAGES
+                    if entry.capability_id == "traffic_history"
+                )
+            if definition:
+                return ActionRequest(
+                    host=host.name, action_type=ActionType.PACKAGE_INSTALL,
+                    parameters=PackageInstallParameters(
+                        package_name=definition.package_name,
+                        expected_capability=definition.capability_id,
+                        reason=f"{definition.description} capability is unavailable",
+                    ),
+                )
+            return None
         container = re.search(r"(?<![A-Za-z0-9_])(C\.[0-9]+)(?![0-9])", text)
         if container and "再起動" in text:
             return ActionRequest(host=host.name, action_type=ActionType.RESTART_VAST_CONTAINER,

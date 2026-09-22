@@ -63,7 +63,11 @@ def test_operations_are_disabled_and_empty_by_default(action_type):
 
 
 def _request_for_any_action(action_type: ActionType) -> ActionRequest:
-    from vast_agent.actions.models import ContainerParameters, VMParameters
+    from vast_agent.actions.models import (
+        ContainerParameters,
+        PackageInstallParameters,
+        VMParameters,
+    )
 
     parameters = {
         ActionType.RESTART_VAST_SERVICE: ServiceParameters(service="vastai.service"),
@@ -74,6 +78,9 @@ def _request_for_any_action(action_type: ActionType) -> ActionRequest:
         ActionType.VM_MODE_ENABLE: VMParameters(mode="on"),
         ActionType.VM_MODE_DISABLE: VMParameters(mode="off"),
         ActionType.HOST_REBOOT: RebootParameters(assessment="HOST_REBOOT_CANDIDATE"),
+        ActionType.PACKAGE_INSTALL: PackageInstallParameters(
+            package_name="vnstat", expected_capability="traffic_history",
+        ),
     }[action_type]
     return ActionRequest(host="torrent", action_type=action_type, parameters=parameters)
 

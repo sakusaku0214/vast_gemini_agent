@@ -5,10 +5,12 @@ from vast_agent.actions.models import (
     ActionType,
     ContainerParameters,
     GPUParameters,
+    PackageInstallParameters,
     ServiceParameters,
     VerificationResult,
     VMParameters,
 )
+from vast_agent.actions.package_catalog import package_definition
 from vast_agent.actions.preflight import ProductionPreflightProvider
 from vast_agent.models.host import Host
 
@@ -24,6 +26,28 @@ class ProductionActionVerifier:
         params = request.parameters
         if not state.ssh_reachable:
             return VerificationResult(success=False, status="UNAVAILABLE", summary="SSH unavailable")
+        if isinstance(params, PackageInstallParameters):
+            executable_states = []
+            service_states = []
+            definition = package_definition(params.package_name)
+            if definition:
+                for executable in definition.executables:
+                    found = self.preflight.executor.execute(
+                        host, ("which", "--", executable), 10,
+                    ).success
+                    executable_states.append(f"{executable}={'present' if found else 'missing'}")
+                for service in definition.services:
+                    result = self.preflight.executor.execute(
+                        host, ("systemctl", "is-active", f"{service}.service"), 10,
+                    )
+                    service_states.append(f"{service}.service={result.stdout.strip() or 'inactive'}")
+            ok = state.package_installed is True
+            summary = f"{params.package_name}: {'installed' if ok else 'absent'}"
+            if state.package_version: summary += f" version={state.package_version}"
+            observations = executable_states + service_states
+            if observations: summary += "; " + ", ".join(observations)
+            return VerificationResult(success=ok, status="VERIFIED" if ok else "FAILED",
+                                      summary=summary)
         if isinstance(params, ServiceParameters):
             ok = state.target_exists and state.current_state == "active"
             return VerificationResult(success=ok, status="VERIFIED" if ok else "FAILED",
