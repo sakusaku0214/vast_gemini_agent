@@ -5,6 +5,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from vast_agent.actions.models import ActionProposal, ProposalStatus
 from vast_agent.jobs.models import Job, JobStatus
 from vast_agent.models.host import Host
 from vast_agent.models.observation import Observation
@@ -166,11 +167,110 @@ class Database:
         return dict(row) if row else None
 
     def save_conversation(self, owner: str, channel: str, host: str | None,
-                          job_id: int | None, scope: str | None) -> None:
+                          job_id: int | None, scope: str | None,
+                          recommended_action: str | None = None) -> None:
         with self.connect() as db:
             db.execute(
-                "INSERT INTO conversation_state VALUES(?,?,?,?,?,?) ON CONFLICT(owner_id,channel_id) "
+                "INSERT INTO conversation_state(owner_id,channel_id,last_host,last_job_id,last_scope,"
+                "updated_at,last_recommended_action) VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(owner_id,channel_id) "
                 "DO UPDATE SET last_host=excluded.last_host,last_job_id=excluded.last_job_id,"
-                "last_scope=excluded.last_scope,updated_at=excluded.updated_at",
-                (owner, channel, host, job_id, scope, datetime.now(UTC).isoformat()),
+                "last_scope=excluded.last_scope,updated_at=excluded.updated_at,"
+                "last_recommended_action=excluded.last_recommended_action",
+                (owner, channel, host, job_id, scope, datetime.now(UTC).isoformat(),
+                 recommended_action),
             )
+
+    def create_action_proposal(self, proposal: ActionProposal) -> int:
+        """Persist only validated/redacted typed fields, never the source user message."""
+        with self.connect() as db:
+            cursor = db.execute(
+                "INSERT INTO action_proposals(host,action_type,params_json,risk_class,status,"
+                "created_at,expires_at,created_by,preflight_json,preflight_fingerprint,job_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (proposal.host, proposal.action_type, proposal.parameters.model_dump_json(),
+                 proposal.risk_class, proposal.status, proposal.created_at.isoformat(),
+                 proposal.expires_at.isoformat(), proposal.created_by,
+                 proposal.preflight_summary.model_dump_json(), proposal.preflight_fingerprint,
+                 proposal.job_id),
+            )
+            return int(cursor.lastrowid)
+
+    def get_action_proposal(self, proposal_id: int) -> dict[str, object] | None:
+        with self.connect() as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute("SELECT * FROM action_proposals WHERE id=?", (proposal_id,)).fetchone()
+        return dict(row) if row else None
+
+    def approve_action_proposal(self, proposal_id: int, approver: str, now: datetime) -> bool:
+        """Atomic single-winner approval and consumption claim."""
+        timestamp = now.isoformat()
+        with self.connect() as db:
+            cursor = db.execute(
+                "UPDATE action_proposals SET status='APPROVED',approved_at=?,approved_by=?,"
+                "consumed_at=? WHERE id=? AND status='PENDING' AND expires_at>?",
+                (timestamp, approver, timestamp, proposal_id, timestamp),
+            )
+            if cursor.rowcount == 0:
+                db.execute(
+                    "UPDATE action_proposals SET status='EXPIRED' WHERE id=? AND status='PENDING' "
+                    "AND expires_at<=?", (proposal_id, timestamp),
+                )
+            return cursor.rowcount == 1
+
+    def reject_action_proposal(self, proposal_id: int, actor: str, now: datetime) -> bool:
+        with self.connect() as db:
+            cursor = db.execute(
+                "UPDATE action_proposals SET status='REJECTED',approved_by=? WHERE id=? "
+                "AND status='PENDING' AND expires_at>?",
+                (actor, proposal_id, now.isoformat()),
+            )
+            return cursor.rowcount == 1
+
+    def set_proposal_status(self, proposal_id: int, status: ProposalStatus,
+                            reason: str | None = None) -> None:
+        with self.connect() as db:
+            db.execute("UPDATE action_proposals SET status=?,invalidated_reason=? WHERE id=?",
+                       (status, reason, proposal_id))
+
+    def create_action_run(self, proposal_id: int, status: str = "EXECUTING") -> int:
+        with self.connect() as db:
+            cursor = db.execute(
+                "INSERT INTO action_runs(proposal_id,started_at,status) VALUES(?,?,?)",
+                (proposal_id, datetime.now(UTC).isoformat(), status),
+            )
+            return int(cursor.lastrowid)
+
+    def finish_action_run(self, run_id: int, status: str, exit_code: int | None,
+                          error_code: str | None, summary: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE action_runs SET finished_at=?,status=?,exit_code=?,error_code=?,"
+                "verify_summary=? WHERE id=?",
+                (datetime.now(UTC).isoformat(), status, exit_code, error_code, summary, run_id),
+            )
+
+    def add_action_event(self, proposal_id: int, event: str, detail: str | None = None,
+                         run_id: int | None = None) -> None:
+        with self.connect() as db:
+            db.execute("INSERT INTO action_events(proposal_id,run_id,created_at,event,detail) "
+                       "VALUES(?,?,?,?,?)", (proposal_id, run_id, datetime.now(UTC).isoformat(),
+                                             event, detail))
+
+    def reconcile_actions(self) -> int:
+        """Never replay an approval or an in-flight write after process restart."""
+        with self.connect() as db:
+            pending = db.execute("UPDATE action_proposals SET status='INTERRUPTED',"
+                                 "invalidated_reason='PROCESS_RESTARTED' WHERE status='PENDING'").rowcount
+            db.execute("UPDATE action_proposals SET status='INTERRUPTED_UNKNOWN',"
+                       "invalidated_reason='PROCESS_RESTARTED_AFTER_APPROVAL' WHERE status IN "
+                       "('APPROVED','EXECUTING','COMMAND_DISPATCHED','WAITING_FOR_HOST_DOWN',"
+                       "'WAITING_FOR_HOST_UP','VERIFYING')")
+            db.execute("UPDATE action_runs SET status='INTERRUPTED_UNKNOWN',finished_at=? "
+                       "WHERE status IN ('EXECUTING','COMMAND_DISPATCHED','WAITING_FOR_HOST_DOWN',"
+                       "'WAITING_FOR_HOST_UP','VERIFYING')", (datetime.now(UTC).isoformat(),))
+            return pending
+
+    def pending_approval_count(self) -> int:
+        with self.connect() as db:
+            return int(db.execute("SELECT COUNT(*) FROM action_proposals WHERE status='PENDING'").fetchone()[0])

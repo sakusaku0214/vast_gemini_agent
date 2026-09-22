@@ -9,6 +9,12 @@ import shutil
 import sys
 from pathlib import Path
 
+from vast_agent.actions.coordinator import ActionCoordinator
+from vast_agent.actions.executor import TypedActionExecutor
+from vast_agent.actions.models import ActionRequest, ActionType, RebootParameters
+from vast_agent.actions.preflight import ProductionPreflightProvider
+from vast_agent.actions.reboot import RebootCoordinator, SSHRebootRemote
+from vast_agent.actions.verifier import ProductionActionVerifier
 from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import GoogleInteractionsClient
 from vast_agent.agent.models import Route
@@ -20,6 +26,7 @@ from vast_agent.config import (
     initialize_config,
     load_gemini_settings,
     load_hosts,
+    load_operations_settings,
     load_runtime_settings,
 )
 from vast_agent.conversation.state import ConversationStore
@@ -85,6 +92,8 @@ def doctor(paths: RuntimePaths) -> int:
     try: settings = load_gemini_settings(paths.agent_file); gemini_state = "OK"
     except ConfigError as exc: settings = None; gemini_state = f"ERROR: {exc}"
     checks.append(("Gemini config", "OK" if settings else "ERROR", gemini_state))
+    operations = load_operations_settings(paths.agent_file)
+    checks.append(("WRITE operations", "OK", "enabled" if operations.enabled else "disabled"))
     checks.append(("API key", "OK" if _api_key(paths) else "WARNING",
                    "configured" if _api_key(paths) else "not configured"))
     for label, state, detail in checks: print(f"{label:<22} {state:<7} {detail}")
@@ -128,17 +137,40 @@ def _agent(paths: RuntimePaths, registry, executor):
                               database, settings)
 
 
-def _service(paths: RuntimePaths, registry, executor) -> AgentService:
+def _service(paths: RuntimePaths, registry, executor, owner_id: int | None = None,
+             channel_id: int | None = None) -> AgentService:
     database = Database(paths.database); database.migrate()
     _, job_settings, conversation_settings = load_runtime_settings(paths.agent_file)
+    operations = load_operations_settings(paths.agent_file)
     secrets = _redaction_secrets(paths)
     inspection = InspectionService(database, paths.observation_logs,
                                    secrets)
+    jobs = JobManager(database, job_settings.max_recent_jobs)
+    actions = None
+    if owner_id is not None and channel_id is not None:
+        preflight = ProductionPreflightProvider(inspection, executor, operations, secrets)
+        reboot_remote = SSHRebootRemote(
+            executor,
+            lambda host: run_tool("host_ping", host, executor).success,
+            lambda host: preflight.collect(
+                host,
+                ActionRequest(
+                    host=host.name, action_type=ActionType.HOST_REBOOT,
+                    parameters=RebootParameters(assessment="HOST_REBOOT_CANDIDATE"),
+                ),
+            ),
+        )
+        actions = ActionCoordinator(
+            database, registry, operations, preflight, TypedActionExecutor(executor, operations),
+            ProductionActionVerifier(preflight), owner_id, channel_id, locks=jobs.locks,
+            reboot=RebootCoordinator(reboot_remote, operations.reboot_recovery_timeout_seconds,
+                                     operations.reboot_poll_seconds), secrets=secrets,
+        )
     return AgentService(registry, inspection, executor,
-                        JobManager(database, job_settings.max_recent_jobs),
+                        jobs,
                         ConversationStore(database), _agent(paths, registry, executor),
                         job_settings.max_parallel_hosts, secrets,
-                        conversation_settings.remember_last_host)
+                        conversation_settings.remember_last_host, actions)
 
 
 def _discord_enabled(paths: RuntimePaths) -> bool:
@@ -216,7 +248,10 @@ def main(argv: list[str] | None = None) -> int:
             if detail: print(f"PID         {detail.get('pid')}\nStarted     {detail.get('started_at')}")
             print(f"Discord     {'configured' if all(secrets.get(k) for k in ('DISCORD_BOT_TOKEN','DISCORD_CHANNEL_ID','DISCORD_OWNER_USER_ID')) else 'not configured'}")
             print(f"Gemini      {'configured' if secrets.get('GEMINI_API_KEY') else 'not configured'}")
+            operations = load_operations_settings(paths.agent_file)
             print(f"Hosts       {len(registry.hosts)}\nJobs        {database.running_job_count()} running")
+            print(f"Operations  {'enabled' if operations.enabled else 'disabled'}")
+            print(f"Approvals   {database.pending_approval_count()} pending")
             return 0
         print(message); return 0 if ok else 2
     if args.command in {"update", "backup"}:
@@ -237,8 +272,9 @@ def main(argv: list[str] | None = None) -> int:
         paths.create()
         redaction_secrets = _redaction_secrets(paths)
         configure_agent_logging(paths.agent_logs / "agent.log", redaction_secrets)
-        service = _service(paths, registry, executor)
+        service = _service(paths, registry, executor, owner, channel)
         service.jobs.reconcile_stale()
+        service.jobs.database.reconcile_actions()
         client = create_bot(owner, channel, service)
         with contextlib.suppress(KeyboardInterrupt):
             client.run(secrets["DISCORD_BOT_TOKEN"], reconnect=True, log_handler=None)

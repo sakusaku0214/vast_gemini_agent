@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from vast_agent.actions.models import ProposalStatus
 from vast_agent.discord_app.formatting import split_messages
 
 
@@ -25,6 +26,16 @@ class DiscordGateway:
             reply = await self.service.handle_question(
                 message.content, message.author.id, message.channel.id,
             )
+            if reply.proposal is not None:
+                view = None
+                if reply.proposal.status == ProposalStatus.PENDING:
+                    from vast_agent.discord_app.approval import ApprovalView
+                    view = ApprovalView(reply.proposal.id, self.service.actions)
+                chunks = split_messages(reply.text)
+                for chunk in chunks[:-1]:
+                    await message.channel.send(chunk)
+                await message.channel.send(chunks[-1], view=view)
+                return
             for chunk in split_messages(reply.text):
                 await message.channel.send(chunk)
         except Exception:
