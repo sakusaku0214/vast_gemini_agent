@@ -22,6 +22,7 @@ example host は予約された文書用IPであり、初期runtimeにはコピ�
 
 基本的な導入順序は `setup.cmd` → secrets設定 → `trust-host` → `gemini-check` →
 `start` です。その後は指定したDiscord channelから自然文で利用できます。
+Discord Developer PortalのBot設定で **MESSAGE CONTENT INTENT** を有効にしてください。
 
 `%LOCALAPPDATA%\VastGeminiAgent\secrets\secrets.env` に次を設定してください。値はログ、
 status、Discord応答に表示されません。OWNERは1ユーザーだけで、指定channel内のOWNER本人による
@@ -51,6 +52,7 @@ command lineを検証するため、stale PIDや無関係なprocessは停止し�
 `全台GPU状態見て`、`今の調査止めて`、`#184止めて`、`ジョブ見せて` です。明白な照会とfleetは
 Geminiを呼ばず、fleetは設定された上限（既定3 host）で並列実行します。conversation stateとjobは
 SQLiteへ小さなsummaryだけを保存し、再起動前に実行中だったjobは`INTERRUPTED`へ移行します。
+Cancel Buttonは現Phaseではgatewayへ接続しておらず、cancelは上記のテキスト入力で行います。
 
 ## CLI
 

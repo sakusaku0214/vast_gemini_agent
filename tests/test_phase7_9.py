@@ -1,10 +1,12 @@
 import asyncio
+import logging
 import subprocess
 import sys
 import threading
 import time
 from types import SimpleNamespace
 
+from vast_agent.agent.models import InvestigationResult
 from vast_agent.config import HostRegistry
 from vast_agent.conversation.state import ConversationStore
 from vast_agent.discord_app.auth import DiscordGuard
@@ -13,6 +15,7 @@ from vast_agent.discord_app.gateway import DiscordGateway
 from vast_agent.execution.ssh import SSHExecutor
 from vast_agent.jobs import CancellationToken, JobManager, JobStatus
 from vast_agent.jobs.locks import LockClass
+from vast_agent.logging_utils import SecretRedactingFormatter
 from vast_agent.models.host import Capabilities, Host
 from vast_agent.models.tool_result import ErrorCode
 from vast_agent.paths import RuntimePaths
@@ -73,8 +76,22 @@ def test_job_persistence_cancel_and_reconcile(tmp_path):
     manager.finish(job, "cancelled"); assert db.get_job(job.id)["status"] == JobStatus.CANCELLED
     assert manager.cancel(job.id) == "already finished"
     stale, _ = manager.create("gpu", "two", "request")
-    JobManager(db)
+    another = JobManager(db)
+    assert db.get_job(stale.id)["status"] == JobStatus.QUEUED
+    another.reconcile_stale()
     assert db.get_job(stale.id)["status"] == JobStatus.INTERRUPTED
+
+
+def test_write_stop_does_not_cancel_last_job(tmp_path):
+    db = Database(tmp_path / "db"); manager = JobManager(db)
+    job, token = manager.create("investigate", "torrent", "調査"); manager.start(job)
+    store = ConversationStore(db)
+    state = store.get(1, 2); state.last_job_id = job.id; state.last_host = "torrent"; store.save(1, 2, state)
+    service = AgentService(HostRegistry(hosts={}), object(), object(), manager, store)
+    reply = asyncio.run(service.handle_question("vastai止めて", 1, 2))
+    assert "WRITE/Approval" in reply.text
+    assert not token.cancelled
+    assert db.get_job(job.id)["status"] == JobStatus.RUNNING
 
 
 def test_host_coordination_serializes_heavy_but_not_different_hosts(tmp_path):
@@ -143,6 +160,19 @@ def test_followup_last_host_and_no_arbitrary_host(tmp_path):
     assert reply.job_id is None and "host" in reply.text
 
 
+def test_remember_last_host_false_disables_followup(tmp_path):
+    host = Host(name="torrent", address="192.0.2.1", ssh_user="u",
+                capabilities=Capabilities(nvidia=True))
+    service, _ = _service(tmp_path, object(), [host])
+    service.remember_last_host = False
+    async def run():
+        await service.handle_question("torrentのGPU温度", 1, 2)
+        return await service.handle_question("ついでにPCIも", 1, 2)
+    reply = asyncio.run(run())
+    assert reply.job_id is None and "host" in reply.text
+    assert service.conversations.get(1, 2).last_host is None
+
+
 def test_write_is_refused_without_remote_and_fleet_is_bounded(tmp_path):
     hosts = [Host(name=f"host-{i}", address=f"192.0.2.{i}", ssh_user="u",
                   capabilities=Capabilities(nvidia=True)) for i in range(5)]
@@ -174,3 +204,81 @@ def test_fleet_cancellation_does_not_start_remaining_hosts(tmp_path):
     result = asyncio.run(run())
     assert service.jobs.database.get_job(result.job_id)["status"] == JobStatus.CANCELLED
     assert inspection.calls < len(hosts)
+
+
+def test_fleet_host_failure_continues_and_finishes_parent(tmp_path):
+    hosts = [Host(name=name, address="192.0.2.1", ssh_user="u",
+                  capabilities=Capabilities(nvidia=True)) for name in ("bad", "good")]
+    service, inspection = _service(tmp_path, object(), hosts)
+    original = inspection.inspect_and_record
+    def inspect(host, *args):
+        if host.name == "bad": raise RuntimeError("boom")
+        return original(host, *args)
+    inspection.inspect_and_record = inspect
+    reply = asyncio.run(service.handle_question("全台GPU状態見て", 1, 2))
+    row = service.jobs.database.get_job(reply.job_id)
+    assert "bad" in reply.text and "ERROR" in reply.text and "good" in reply.text
+    assert row["status"] == JobStatus.FAILED
+
+
+def test_fleet_and_investigation_same_host_do_not_overlap(tmp_path):
+    host = Host(name="torrent", address="192.0.2.1", ssh_user="u",
+                capabilities=Capabilities(nvidia=True))
+    service, inspection = _service(tmp_path, object(), [host])
+    active = 0; peak = 0
+    original = inspection.inspect_and_record
+    def enter_and_wait(callback):
+        nonlocal active, peak
+        active += 1; peak = max(peak, active)
+        try: time.sleep(.06); return callback()
+        finally: active -= 1
+    def inspect(*args): return enter_and_wait(lambda: original(*args))
+    inspection.inspect_and_record = inspect
+    class Agent:
+        def investigate(self, *args):
+            return enter_and_wait(lambda: InvestigationResult(summary="ok"))
+    service.agent = Agent()
+    async def run():
+        await asyncio.gather(
+            service.handle_question("torrentの原因調べて", 1, 2),
+            service.handle_question("全台GPU状態見て", 1, 2),
+        )
+    asyncio.run(run())
+    assert peak == 1
+
+
+def test_secret_redaction_at_service_database_gemini_and_logging(tmp_path):
+    secret = "super-secret-value"
+    host = Host(name="torrent", address="192.0.2.1", ssh_user="u",
+                capabilities=Capabilities(nvidia=True))
+    db = Database(tmp_path / "db"); jobs = JobManager(db); seen = {}
+    class Agent:
+        def investigate(self, host, question):
+            seen["question"] = question
+            return InvestigationResult(summary=f"model echoed {secret}")
+    service = AgentService(HostRegistry(hosts={host.name: host}), object(), object(), jobs,
+                           ConversationStore(db), Agent(), secrets=(secret,))
+    reply = asyncio.run(service.handle_question(f"torrentの原因調べて {secret}", 1, 2))
+    row = db.get_job(reply.job_id)
+    assert secret not in seen["question"]
+    assert secret not in row["request_summary"] and secret not in row["result_summary"]
+    assert secret not in reply.text
+
+    formatter = SecretRedactingFormatter("%(message)s", (secret,))
+    try:
+        raise RuntimeError(secret)
+    except RuntimeError:
+        record = logging.LogRecord("test", logging.ERROR, __file__, 1, f"failed {secret}", (),
+                                   sys.exc_info())
+    assert secret not in formatter.format(record)
+
+
+def test_observation_severity_is_not_green_for_failures():
+    def observation(ssh_ok=True, nvml_ok=True, signatures=(), devices=True):
+        gpu = SimpleNamespace(nvml_ok=nvml_ok, devices=(
+            [SimpleNamespace(model="GPU", temperature_c=42, utilization_percent=0)] if devices else []))
+        return SimpleNamespace(host="host", ssh_ok=ssh_ok, signatures=list(signatures), gpu=gpu)
+    assert AgentService._format_observation(observation()).startswith("🟢")
+    assert AgentService._format_observation(observation(ssh_ok=False)).startswith("🔴")
+    assert not AgentService._format_observation(observation(nvml_ok=False)).startswith("🟢")
+    assert not AgentService._format_observation(observation(signatures=("NVML_UNAVAILABLE",))).startswith("🟢")

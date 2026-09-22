@@ -69,3 +69,12 @@ def test_gemini_check_uses_stateless_text_input(tmp_path, capsys, monkeypatch):
     assert captured["inputs"] == [{"type": "text", "text": "Reply OK."}]
     assert captured["store"] is False
     assert "Interactions API OK" in capsys.readouterr().out
+
+
+def test_start_respects_discord_disabled(tmp_path, capsys):
+    assert main(["--runtime", str(tmp_path), "install"]) == 0
+    (tmp_path / "config" / "agent.yaml").write_text(
+        "discord:\n  enabled: false\n", encoding="utf-8",
+    )
+    assert main(["--runtime", str(tmp_path), "start"]) == 2
+    assert "disabled" in capsys.readouterr().err

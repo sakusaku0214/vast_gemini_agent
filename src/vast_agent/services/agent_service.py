@@ -8,6 +8,7 @@ from vast_agent.agent.models import Route
 from vast_agent.agent.router import route_intent
 from vast_agent.config import HostRegistry
 from vast_agent.conversation.state import ConversationState, ConversationStore
+from vast_agent.execution.base import redact
 from vast_agent.jobs.cancellation import current_cancellation
 from vast_agent.jobs.locks import LockClass
 from vast_agent.jobs.manager import JobManager
@@ -26,10 +27,13 @@ class AgentService:
 
     def __init__(self, registry: HostRegistry, inspection: InspectionService, executor,
                  jobs: JobManager, conversations: ConversationStore, agent=None,
-                 max_parallel_hosts: int = 3) -> None:
+                 max_parallel_hosts: int = 3, secrets: tuple[str, ...] = (),
+                 remember_last_host: bool = True) -> None:
         self.registry = registry; self.inspection = inspection; self.executor = executor
         self.jobs = jobs; self.conversations = conversations; self.agent = agent
         self.max_parallel_hosts = max_parallel_hosts
+        self.secrets = secrets
+        self.remember_last_host = remember_last_host
 
     async def handle_question(self, text: str, owner: int | str = "cli",
                               channel: int | str = "cli") -> ServiceReply:
@@ -39,7 +43,7 @@ class AgentService:
             lines = [f"#{j['id']} {j['status']:<11} {j['host'] or '-'} {j['kind']}"
                      for j in self.jobs.recent()]
             return ServiceReply("Jobs\n" + ("\n".join(lines) or "(none)"))
-        if "止めて" in folded or folded.startswith("!cancel"):
+        if self._is_cancel_request(folded):
             explicit = re.search(r"#(\d+)", folded)
             target = int(explicit.group(1)) if explicit else state.last_job_id
             if target is None:
@@ -51,7 +55,7 @@ class AgentService:
             return ServiceReply(f"Job #{target}: {self.jobs.cancel(target)}", target)
         if self._is_fleet(folded):
             scope = "gpu" if "gpu" in folded else "vast" if "vast" in folded else "system"
-            return await self._fleet(text, scope, state, owner, channel)
+            return await self._fleet(self._clean(text), scope, state, owner, channel)
 
         decision = route_intent(text, self.registry)
         if decision.route == Route.UNSUPPORTED_WRITE:
@@ -70,8 +74,10 @@ class AgentService:
             else:
                 return ServiceReply("調査内容を指定してください。")
         kind = "investigate" if decision.route == Route.AGENT else decision.scope or "inspect"
-        job, token = self.jobs.create(kind, host.name, text)
-        state.last_host = host.name; state.last_job_id = job.id; state.last_scope = decision.scope
+        safe_text = self._clean(text)
+        job, token = self.jobs.create(kind, host.name, safe_text)
+        state.last_host = host.name if self.remember_last_host else None
+        state.last_job_id = job.id; state.last_scope = decision.scope
         self.conversations.save(owner, channel, state)
         self.jobs.start(job)
         lock_class = LockClass.HEAVY_READ if decision.route == Route.AGENT else LockClass.READ
@@ -82,18 +88,29 @@ class AgentService:
                     if token.cancelled: return "cancelled"
                     if decision.route == Route.AGENT:
                         if self.agent is None: return "Gemini unavailable: GEMINI_API_KEY is not configured."
-                        return self._format_investigation(host.name, self.agent.investigate(host.name, text))
+                        result = self.agent.investigate(host.name, safe_text)
+                        return self._clean(self._format_investigation(host.name, result))
                     record = self.inspection.inspect_and_record(host, self.executor, decision.scope, token)
                     return self._format_observation(record.observation)
             finally:
                 current_cancellation.reset(context)
         try:
             summary = await asyncio.to_thread(work)
+            summary = self._clean(summary)
             self.jobs.finish(job, summary)
         except Exception:
             summary = "調査を完了できませんでした。詳細はagent logを確認してください。"
             self.jobs.finish(job, summary, "SERVICE_ERROR")
-        return ServiceReply(f"Job #{job.id}\n{summary}", job.id)
+        return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
+
+    @staticmethod
+    def _is_cancel_request(text: str) -> bool:
+        return (text.startswith("!cancel")
+                or bool(re.search(r"#\d+\s*止めて", text))
+                or bool(re.search(r"(?:今の調査|この調査|ジョブ)(?:を)?止めて", text)))
+
+    def _clean(self, value: str) -> str:
+        return redact(value, self.secrets)
 
     def _resolve_host(self, text: str, routed: str | None, state: ConversationState):
         folded = text.casefold(); matches = []
@@ -105,7 +122,9 @@ class AgentService:
         if routed:
             try: return self.registry.resolve(routed), []
             except KeyError: pass
-        if any(word in folded for word in ("ついでに", "それも", "さっき", "必要", "すべき")) and state.last_host:
+        if (self.remember_last_host
+                and any(word in folded for word in ("ついでに", "それも", "さっき", "必要", "すべき"))
+                and state.last_host):
             try: return self.registry.resolve(state.last_host), []
             except KeyError: pass
         return None, []
@@ -124,18 +143,33 @@ class AgentService:
             async with semaphore:
                 if token.cancelled: return f"{host.name:<20} CANCELLED"
                 def inspect():
-                    with self.jobs.locks.acquire(host.name, LockClass.READ):
+                    with self.jobs.locks.acquire(host.name, LockClass.HEAVY_READ):
+                        if token.cancelled:
+                            return None
                         return self.inspection.inspect_and_record(host, self.executor, scope, token).observation
-                observation = await asyncio.to_thread(inspect)
+                try:
+                    observation = await asyncio.to_thread(inspect)
+                except Exception:
+                    return f"{host.name:<20} ERROR inspection failed"
+                if observation is None: return f"{host.name:<20} CANCELLED"
                 if token.cancelled: return f"{host.name:<20} CANCELLED"
                 state_name = "OK" if observation.ssh_ok and not observation.signatures else "WARN"
                 detail = self._fleet_detail(observation, scope)
                 return f"{host.name:<20} {state_name:<5} {detail}"
-        tasks = [asyncio.create_task(one(h)) for h in self.registry.hosts.values() if h.enabled]
-        rows = await asyncio.gather(*tasks)
-        summary = f"🖥 Fleet {scope.upper()}\n" + "\n".join(rows)
-        self.jobs.finish(job, summary)
-        return ServiceReply(f"Job #{job.id}\n{summary}", job.id)
+        try:
+            tasks = [asyncio.create_task(one(h)) for h in self.registry.hosts.values() if h.enabled]
+            rows = await asyncio.gather(*tasks)
+            summary = f"🖥 Fleet {scope.upper()}\n" + "\n".join(rows)
+            error_code = "FLEET_PARTIAL_FAILURE" if any(" ERROR " in row for row in rows) else None
+            self.jobs.finish(job, self._clean(summary), error_code)
+        except asyncio.CancelledError:
+            summary = "Fleet coordination failed. 詳細はagent logを確認してください。"
+            self.jobs.finish(job, summary, "FLEET_COORDINATOR_ERROR")
+            raise
+        except Exception:
+            summary = "Fleet coordination failed. 詳細はagent logを確認してください。"
+            self.jobs.finish(job, summary, "FLEET_COORDINATOR_ERROR")
+        return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
 
     @staticmethod
     def _fleet_detail(observation, scope):
@@ -150,7 +184,11 @@ class AgentService:
     @staticmethod
     def _format_observation(observation) -> str:
         gpu = observation.gpu; first = gpu.devices[0] if gpu.devices else None
-        return (f"🟢 {observation.host}\nGPU: {first.model if first else 'not detected'}\n"
+        serious = {"NVIDIA_FALLEN_OFF_BUS", "GPU_STUCK_D3", "NVIDIA_GSP_FAILURE"}
+        if not observation.ssh_ok or serious.intersection(observation.signatures): icon = "🔴"
+        elif observation.signatures or not gpu.nvml_ok or not first: icon = "🟡"
+        else: icon = "🟢"
+        return (f"{icon} {observation.host}\nGPU: {first.model if first else 'not detected'}\n"
                 f"Temp: {first.temperature_c if first else '-'}°C\n"
                 f"Util: {first.utilization_percent if first else '-'}%\n"
                 f"NVML: {'OK' if gpu.nvml_ok else 'unavailable'}")

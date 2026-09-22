@@ -17,7 +17,10 @@ class JobManager:
         self._tokens: dict[int, CancellationToken] = {}
         self._guard = threading.Lock()
         database.migrate()
-        database.reconcile_jobs()
+
+    def reconcile_stale(self) -> int:
+        """Mark jobs left active by a previous process; call once during bot bootstrap."""
+        return self.database.reconcile_jobs()
 
     def create(self, kind: str, host: str | None, request: str) -> tuple[Job, CancellationToken]:
         now = datetime.now(UTC)

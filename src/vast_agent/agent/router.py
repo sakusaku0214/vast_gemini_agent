@@ -9,7 +9,7 @@ SCOPES = {
     "dockerの状態": "docker", "vm状態": "vm", "vmの状態": "vm",
     "ディスク": "system", "vast状態": "vast", "vastの状態": "vast",
 }
-WRITE_WORDS = ("再起動", "restart", "reset", "リセット", "停止", "stop", "reboot", "shutdown")
+WRITE_WORDS = ("再起動", "restart", "reset", "リセット", "停止", "止めて", "stop", "reboot", "shutdown")
 ADVICE_WORDS = ("すべき", "必要", "候補", "した方が", "でしょう", "ですか", "？", "?")
 AGENT_WORDS = ("おかしく", "原因", "調べ", "なぜ", "なんで", "前にも", "過去", "消え")
 

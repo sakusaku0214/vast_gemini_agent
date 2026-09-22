@@ -37,6 +37,10 @@ class JobSettings(BaseModel):
     max_recent_jobs: int = 20
 
 
+class ConversationSettings(BaseModel):
+    remember_last_host: bool = True
+
+
 def load_gemini_settings(path: Path) -> GeminiSettings:
     if not path.exists():
         return GeminiSettings()
@@ -47,13 +51,14 @@ def load_gemini_settings(path: Path) -> GeminiSettings:
         raise ConfigError(f"Invalid agent configuration: {exc}") from exc
 
 
-def load_runtime_settings(path: Path) -> tuple[DiscordSettings, JobSettings]:
+def load_runtime_settings(path: Path) -> tuple[DiscordSettings, JobSettings, ConversationSettings]:
     if not path.exists():
-        return DiscordSettings(), JobSettings()
+        return DiscordSettings(), JobSettings(), ConversationSettings()
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         return (DiscordSettings.model_validate(raw.get("discord", {})),
-                JobSettings.model_validate(raw.get("jobs", {})))
+                JobSettings.model_validate(raw.get("jobs", {})),
+                ConversationSettings.model_validate(raw.get("conversation", {})))
     except (OSError, yaml.YAMLError, ValidationError, TypeError, AttributeError) as exc:
         raise ConfigError(f"Invalid agent configuration: {exc}") from exc
 

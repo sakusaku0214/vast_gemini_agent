@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import contextlib
 import json
-import logging
 import os
 import shutil
 import sys
@@ -24,9 +23,11 @@ from vast_agent.config import (
     load_runtime_settings,
 )
 from vast_agent.conversation.state import ConversationStore
+from vast_agent.execution.base import redact
 from vast_agent.execution.ssh import SSHExecutor
 from vast_agent.inspector import GROUPS
 from vast_agent.jobs.manager import JobManager
+from vast_agent.logging_utils import configure_agent_logging
 from vast_agent.migrate_v1 import migrate_v1
 from vast_agent.paths import RuntimePaths
 from vast_agent.runtime import RuntimeManager
@@ -110,11 +111,15 @@ def _secrets(paths: RuntimePaths) -> dict[str, str]:
     return values
 
 
+def _redaction_secrets(paths: RuntimePaths) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*load_redaction_secrets(paths.secrets_file), *_secrets(paths).values())))
+
+
 def _agent(paths: RuntimePaths, registry, executor):
     settings = load_gemini_settings(paths.agent_file); key = _api_key(paths)
     if not key: return None
     database = Database(paths.database)
-    secrets = load_redaction_secrets(paths.secrets_file)
+    secrets = _redaction_secrets(paths)
     functions = FunctionExecutor(
         registry, InspectionService(database, paths.observation_logs, secrets), database,
         executor, settings.max_evidence_chars_per_tool, secrets,
@@ -125,13 +130,20 @@ def _agent(paths: RuntimePaths, registry, executor):
 
 def _service(paths: RuntimePaths, registry, executor) -> AgentService:
     database = Database(paths.database); database.migrate()
-    _, job_settings = load_runtime_settings(paths.agent_file)
+    _, job_settings, conversation_settings = load_runtime_settings(paths.agent_file)
+    secrets = _redaction_secrets(paths)
     inspection = InspectionService(database, paths.observation_logs,
-                                   load_redaction_secrets(paths.secrets_file))
+                                   secrets)
     return AgentService(registry, inspection, executor,
                         JobManager(database, job_settings.max_recent_jobs),
                         ConversationStore(database), _agent(paths, registry, executor),
-                        job_settings.max_parallel_hosts)
+                        job_settings.max_parallel_hosts, secrets,
+                        conversation_settings.remember_last_host)
+
+
+def _discord_enabled(paths: RuntimePaths) -> bool:
+    discord_settings, _, _ = load_runtime_settings(paths.agent_file)
+    return discord_settings.enabled
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -176,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {"start", "stop", "restart", "status"}:
         runtime = RuntimeManager(paths)
         if args.command == "start":
+            if not _discord_enabled(paths):
+                print("Discord is disabled in agent.yaml.", file=sys.stderr); return 2
             required = ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID")
             missing = [key for key in required if not _secrets(paths).get(key)]
             if missing:
@@ -186,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "restart":
             ok, message = runtime.stop()
             if ok:
+                if not _discord_enabled(paths):
+                    print("Discord is disabled in agent.yaml.", file=sys.stderr); return 2
                 required = ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID")
                 missing = [key for key in required if not _secrets(paths).get(key)]
                 if missing:
@@ -209,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-discord":
         from vast_agent.discord_app.bot import create_bot
 
+        if not _discord_enabled(paths):
+            print("Discord is disabled in agent.yaml.", file=sys.stderr); return 2
         secrets = _secrets(paths); required = ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID")
         missing = [key for key in required if not secrets.get(key)]
         if missing:
@@ -217,9 +235,11 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             print("Discord channel and owner IDs must be integers.", file=sys.stderr); return 2
         paths.create()
-        logging.basicConfig(filename=paths.agent_logs / "agent.log", level=logging.INFO,
-                            format="%(asctime)s %(levelname)s component=%(name)s %(message)s")
-        client = create_bot(owner, channel, _service(paths, registry, executor))
+        redaction_secrets = _redaction_secrets(paths)
+        configure_agent_logging(paths.agent_logs / "agent.log", redaction_secrets)
+        service = _service(paths, registry, executor)
+        service.jobs.reconcile_stale()
+        client = create_bot(owner, channel, service)
         with contextlib.suppress(KeyboardInterrupt):
             client.run(secrets["DISCORD_BOT_TOKEN"], reconnect=True, log_handler=None)
         return 0
@@ -243,7 +263,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR HOST_DISABLED: {target.name}", file=sys.stderr); return 2
         agent = _agent(paths, registry, executor)
         if agent is None: print("Gemini unavailable: GEMINI_API_KEY is not configured."); return 2
-        print(agent.investigate(target.name, args.question).model_dump_json(indent=2)); return 0
+        question = redact(args.question, _redaction_secrets(paths))
+        print(agent.investigate(target.name, question).model_dump_json(indent=2)); return 0
     try: host = registry.resolve(args.host)
     except KeyError:
         print(f"ERROR HOST_NOT_FOUND: {args.host}", file=sys.stderr); return 2
