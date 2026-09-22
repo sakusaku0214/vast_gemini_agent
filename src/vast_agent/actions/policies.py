@@ -22,7 +22,10 @@ class PolicyResult(BaseModel):
 class PolicyEngine:
     def evaluate(self, request: ActionRequest, state: PreflightSnapshot, settings: OperationsSettings, *, execution: bool = False) -> PolicyResult:
         reasons: list[str] = []
-        if execution and not settings.enabled: reasons.append("OPERATIONS_DISABLED")
+        if execution and not settings.enabled:
+            reasons.append("OPERATIONS_DISABLED")
+        elif request.action_type.value not in settings.allowed_actions:
+            reasons.append("ACTION_NOT_ALLOWED")
         if not state.host_enabled: reasons.append("HOST_DISABLED")
         if not state.ssh_reachable: reasons.append("SSH_UNREACHABLE")
         if not state.sudo_available: reasons.append("SUDO_NOT_AVAILABLE")

@@ -49,7 +49,7 @@ def setup(tmp_path, *, enabled=True, state=None, verifier=True):
     db = Database(tmp_path / "db.sqlite"); db.migrate()
     host = Host(name="torrent", address="192.0.2.1", ssh_user="agent")
     hosts = HostRegistry(hosts={host.name: host})
-    settings = OperationsSettings(enabled=enabled)
+    settings = OperationsSettings(enabled=enabled, allowed_actions=list(ActionType))
     state = state or PreflightSnapshot(ssh_reachable=True, sudo_available=True, target_exists=True, evidence_complete=True)
     remote = RecordingExecutor()
     coordinator = ActionCoordinator(db, hosts, settings, FakePreflight(state),
@@ -294,7 +294,9 @@ def test_action_preflight_and_verification_are_redacted_in_database(tmp_path):
     db = Database(tmp_path / "db.sqlite"); db.migrate()
     host = Host(name="torrent", address="192.0.2.1", ssh_user="agent")
     hosts = HostRegistry(hosts={host.name: host})
-    settings = OperationsSettings(enabled=True)
+    settings = OperationsSettings(
+        enabled=True, allowed_actions=[ActionType.RESTART_VAST_SERVICE],
+    )
     state = PreflightSnapshot(ssh_reachable=True, sudo_available=True, target_exists=True,
                               evidence_complete=True, details={"diagnostic": secret})
     remote = RecordingExecutor()

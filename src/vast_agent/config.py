@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -41,11 +42,25 @@ class ConversationSettings(BaseModel):
     remember_last_host: bool = True
 
 
+AllowedAction = Literal[
+    "RESTART_VAST_SERVICE",
+    "RESTART_DOCKER_SERVICE",
+    "RESTART_LIBVIRT_SERVICE",
+    "RESTART_VAST_CONTAINER",
+    "GPU_RESET",
+    "VM_MODE_ENABLE",
+    "VM_MODE_DISABLE",
+    "HOST_REBOOT",
+]
+
+
 class OperationsSettings(BaseModel):
     """Fail-closed settings for the state-changing action subsystem."""
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
+    # Keep configuration independent of actions.models to avoid a circular import.
+    allowed_actions: list[AllowedAction] = Field(default_factory=list)
     approval_ttl_seconds: int = Field(default=600, ge=60, le=3600)
     action_timeout_seconds: int = Field(default=60, ge=5, le=600)
     reboot_recovery_timeout_seconds: int = Field(default=300, ge=10, le=3600)
@@ -146,7 +161,7 @@ def initialize_config(paths: RuntimePaths, examples: Path | None = None) -> None
     paths.create()
     defaults = {
         paths.hosts_file: "hosts: {}\n",
-        paths.agent_file: "ssh:\n  connect_timeout: 10\n  server_alive_interval: 5\n  server_alive_count_max: 2\ngemini:\n  model: gemini-3.8-flash\n  api_version: v1\n  default_thinking_level: low\n  investigate_thinking_level: medium\n  allow_high_thinking: true\n  store_interactions: false\ndiscord:\n  enabled: true\njobs:\n  max_parallel_hosts: 3\n  max_recent_jobs: 20\nconversation:\n  remember_last_host: true\noperations:\n  enabled: false\n  approval_ttl_seconds: 600\n  action_timeout_seconds: 60\n  reboot_recovery_timeout_seconds: 300\n  reboot_poll_seconds: 10\n  enable_vms_script: null\n",
+        paths.agent_file: "ssh:\n  connect_timeout: 10\n  server_alive_interval: 5\n  server_alive_count_max: 2\ngemini:\n  model: gemini-3.8-flash\n  api_version: v1\n  default_thinking_level: low\n  investigate_thinking_level: medium\n  allow_high_thinking: true\n  store_interactions: false\ndiscord:\n  enabled: true\njobs:\n  max_parallel_hosts: 3\n  max_recent_jobs: 20\nconversation:\n  remember_last_host: true\noperations:\n  enabled: false\n  allowed_actions: []\n  approval_ttl_seconds: 600\n  action_timeout_seconds: 60\n  reboot_recovery_timeout_seconds: 300\n  reboot_poll_seconds: 10\n  enable_vms_script: null\n",
     }
     for target, content in defaults.items():
         if not target.exists():
