@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from vast_agent.agent.functions import FUNCTION_DECLARATIONS, FunctionExecutor
 from vast_agent.agent.gemini import GeminiClient
 from vast_agent.agent.models import InvestigationResult
-from vast_agent.agent.prompts import SYSTEM_PROMPT
+from vast_agent.agent.prompts import GENERAL_SYSTEM_PROMPT, SYSTEM_PROMPT
 from vast_agent.config import GeminiSettings
 from vast_agent.jobs.cancellation import current_cancellation
 from vast_agent.storage.database import Database
@@ -18,6 +18,27 @@ class InvestigationAgent:
     def __init__(self, client: GeminiClient, functions: FunctionExecutor, database: Database,
                  settings: GeminiSettings) -> None:
         self.client = client; self.functions = functions; self.database = database; self.settings = settings
+
+    def answer_general(self, question: str) -> str:
+        """Answer without exposing host functions or any other tools."""
+        try:
+            response = self.client.interact(
+                model=self.settings.model,
+                inputs=[{"type": "text", "text": question}],
+                system_instruction=GENERAL_SYSTEM_PROMPT,
+                tools=[],
+                thinking_level=self.settings.default_thinking_level,
+                store=self.settings.store_interactions,
+            )
+        except Exception:  # API boundary; never expose provider or credential details
+            return "Gemini unavailable. 一般質問に回答できません。"
+        self.database.save_token_usage(
+            "general", self.settings.model, self.settings.default_thinking_level, response.usage,
+        )
+        if not response.output_text:
+            return "Gemini unavailable. 一般質問への回答を取得できませんでした。"
+        # Discord output remains bounded even if a provider ignores the prompt limit.
+        return response.output_text[:1200]
 
     def investigate(self, host: str, question: str) -> InvestigationResult:
         start = time.monotonic(); tool_calls = 0; llm_calls = 0

@@ -22,7 +22,9 @@ class ActionIntentResolver:
 
     def resolve(self, text: str, context_host: str | None = None) -> ActionRequest | None:
         # Advisory questions remain investigation-only.
-        if any(word in text.casefold() for word in ("すべき", "必要？", "必要?")):
+        if any(word in text.casefold() for word in (
+            "すべき", "必要？", "必要?", "した方", "でしょう", "ですか", "？", "?",
+        )):
             return None
         try: host = self.hosts.resolve_in_text(text)
         except KeyError:
