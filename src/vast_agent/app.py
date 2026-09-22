@@ -148,10 +148,12 @@ def main(argv: list[str] | None = None) -> int:
         if not decision.host:
             print("ERROR HOST_NOT_FOUND_OR_AMBIGUOUS", file=sys.stderr); return 2
         host = registry.resolve(decision.host)
+        if not host.enabled:
+            print(f"ERROR HOST_DISABLED: {host.name}", file=sys.stderr); return 2
         if decision.route == Route.DETERMINISTIC:
             record = InspectionService(Database(paths.database), paths.observation_logs,
                                        load_redaction_secrets(paths.secrets_file)).inspect_and_record(
-                                           host, executor, None if decision.scope == "system" else decision.scope)
+                                           host, executor, decision.scope)
             print(json.dumps(record.observation.model_dump(mode="json"), ensure_ascii=False, indent=2)); return 0
         if decision.route == Route.AGENT:
             agent = _agent(paths, registry, executor)
@@ -163,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
         try: target = registry.resolve(args.host)
         except KeyError:
             print(f"ERROR HOST_NOT_FOUND: {args.host}", file=sys.stderr); return 2
+        if not target.enabled:
+            print(f"ERROR HOST_DISABLED: {target.name}", file=sys.stderr); return 2
         agent = _agent(paths, registry, executor)
         if agent is None: print("Gemini unavailable: GEMINI_API_KEY is not configured."); return 2
         print(agent.investigate(target.name, args.question).model_dump_json(indent=2)); return 0

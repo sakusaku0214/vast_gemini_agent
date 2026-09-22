@@ -51,7 +51,8 @@ class FunctionCall(BaseModel):
 
 
 class AgentResponse(BaseModel):
-    text: str | None = None
+    output_text: str | None = None
+    steps: list[dict[str, object]] = Field(default_factory=list)
     function_calls: list[FunctionCall] = Field(default_factory=list)
     usage: dict[str, int | None] = Field(default_factory=dict)
 

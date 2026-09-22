@@ -10,12 +10,15 @@ from vast_agent.config import HostRegistry
 from vast_agent.execution.base import Executor, redact
 from vast_agent.services.inspection import InspectionService
 from vast_agent.storage.database import Database
+from vast_agent.tools.registry import run_tool
 
-EVIDENCE_GROUP: Final = {
-    "gpu_status": "gpu", "gpu_processes": "gpu", "pci": "pci",
-    "kernel_gpu_errors": "gpu", "d_state": "system", "vast_status": "vast",
-    "vast_logs": "vast", "docker": "docker", "vm": "vm", "services": "system",
-    "journal_errors": "system", "system_health": "system",
+EVIDENCE_TOOL: Final = {
+    "gpu_status": "get_gpu_status", "gpu_processes": "get_gpu_processes",
+    "pci": "get_pci_status", "kernel_gpu_errors": "get_kernel_gpu_errors",
+    "d_state": "get_d_state_processes", "vast_status": "get_vast_status",
+    "vast_logs": "get_vast_logs", "docker": "get_docker_status", "vm": "get_vm_status",
+    "services": "get_service_status", "journal_errors": "get_journal_errors",
+    "system_health": "get_system_health",
 }
 
 FUNCTION_DECLARATIONS = [
@@ -47,12 +50,27 @@ class FunctionExecutor:
             return {"error": "HOST_MISMATCH"}
         try: host = self.registry.resolve(target_host)
         except KeyError: return {"error": "HOST_NOT_FOUND"}
+        if not host.enabled:
+            return {"error": "HOST_DISABLED"}
         if name == "get_recent_incidents":
             result = {"incidents": self.database.recent_incidents(host.name, args.signature, args.limit)}
+        elif name == "collect_evidence":
+            tool_name = EVIDENCE_TOOL[args.evidence_type]
+            tool_result = run_tool(tool_name, host, self.remote)
+            result = {
+                "evidence_type": args.evidence_type,
+                "tool": tool_name,
+                "success": tool_result.success,
+                "exit_code": tool_result.exit_code,
+                "error_code": tool_result.error_code,
+                "evidence_excerpt": "\n".join(
+                    part for part in (tool_result.stdout, tool_result.stderr) if part
+                ),
+            }
         else:
-            scope = args.scope if name == "inspect_host" else EVIDENCE_GROUP[args.evidence_type]
+            scope = args.scope
             record = self.inspection.inspect_and_record(
-                host, self.remote, None if scope in {"full", "system"} else scope,
+                host, self.remote, None if scope == "full" else scope,
             )
             observation = record.observation
             result = {"observation": {

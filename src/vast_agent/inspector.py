@@ -10,6 +10,7 @@ GROUPS = {
     "vast": ("host_ping", "get_vast_status", "get_vast_logs"),
     "docker": ("host_ping", "get_docker_status"),
     "vm": ("host_ping", "get_vm_status", "get_pci_status"),
+    "system": ("host_ping", "get_system_health", "get_d_state_processes", "get_service_status"),
 }
 FULL = tuple(dict.fromkeys(tool for tools in GROUPS.values() for tool in tools)) + (
     "get_system_health", "get_d_state_processes", "get_service_status", "get_journal_errors",

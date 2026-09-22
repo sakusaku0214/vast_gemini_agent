@@ -27,20 +27,20 @@ class GoogleInteractionsClient:
         self.calls += 1
         response = self._client.interactions.create(
             model=model, input=list(inputs), system_instruction=system_instruction,
-            tools=tools, thinking_level=thinking_level, store=store,
+            tools=tools, generation_config={"thinking_level": thinking_level}, store=store,
         )
         calls: list[FunctionCall] = []
-        texts: list[str] = []
-        for item in getattr(response, "outputs", ()) or ():
-            kind = getattr(item, "type", None)
+        steps: list[dict[str, object]] = []
+        for item in getattr(response, "steps", ()) or ():
+            dumped = item.model_dump()
+            steps.append(dumped)
+            kind = getattr(item, "type", None) or dumped.get("type")
             if kind == "function_call":
-                args = getattr(item, "arguments", {})
+                args = getattr(item, "arguments", None) or dumped.get("arguments", {})
                 if isinstance(args, str): args = json.loads(args)
-                calls.append(FunctionCall(name=item.name, arguments=args,
-                                          call_id=getattr(item, "id", "")))
-            elif kind in {"text", "message"}:
-                value = getattr(item, "text", None) or getattr(item, "content", None)
-                if value: texts.append(str(value))
+                calls.append(FunctionCall(name=getattr(item, "name", dumped.get("name")),
+                                          arguments=args,
+                                          call_id=getattr(item, "id", dumped.get("id", ""))))
         metadata = getattr(response, "usage", None) or getattr(response, "usage_metadata", None)
         usage = {}
         aliases = {
@@ -54,7 +54,8 @@ class GoogleInteractionsClient:
         for target, names in aliases.items():
             usage[target] = next((getattr(metadata, n) for n in names
                                   if metadata is not None and getattr(metadata, n, None) is not None), None)
-        return AgentResponse(text="\n".join(texts) or None, function_calls=calls, usage=usage)
+        return AgentResponse(output_text=getattr(response, "output_text", None), steps=steps,
+                             function_calls=calls, usage=usage)
 
 
 class ScriptedGeminiClient:
@@ -65,4 +66,9 @@ class ScriptedGeminiClient:
         self.calls += 1; self.requests.append(kwargs)
         response = self.responses.pop(0)
         if isinstance(response, Exception): raise response
+        response.function_calls = [
+            FunctionCall(name=str(step["name"]), arguments=step.get("arguments", {}),
+                         call_id=str(step.get("id", "")))
+            for step in response.steps if step.get("type") == "function_call"
+        ]
         return response
