@@ -15,6 +15,14 @@ class GpuDevice(BaseModel):
     pci_bus: str | None = None
 
 
+class PciDevice(BaseModel):
+    pci_address: str
+    device_type: str
+    driver: str | None = None
+    modules: list[str] = Field(default_factory=list)
+    function_group: str
+
+
 class GpuSummary(BaseModel):
     pci_count: int = 0
     nvml_ok: bool = False
@@ -24,6 +32,7 @@ class GpuSummary(BaseModel):
     unbound: int = 0
     unknown_bound: int = 0
     devices: list[GpuDevice] = Field(default_factory=list)
+    pci_devices: list[PciDevice] = Field(default_factory=list)
 
 
 class SystemSummary(BaseModel):

@@ -47,4 +47,7 @@ def run_tool(name: str, host: Host, executor: Executor) -> ToolResult:
             success=False, duration_ms=0, error_code=ErrorCode.TOOL_UNSUPPORTED,
             stderr=f"Host does not declare capability: {', '.join(unsupported)}",
         )
+    execute_tool = getattr(executor, "execute_tool", None)
+    if execute_tool is not None:
+        return execute_tool(name, host, metadata.command, metadata.timeout)
     return executor.execute(host, metadata.command, metadata.timeout)
