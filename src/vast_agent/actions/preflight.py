@@ -18,6 +18,16 @@ from vast_agent.execution.base import Executor, redact
 from vast_agent.models.host import Host
 from vast_agent.services.inspection import InspectionService
 
+PACKAGE_TOOLS = ("apt-get", "apt-cache", "dpkg-query", "fuser")
+
+
+def package_manager_state(value: bool | None) -> str:
+    if value is True:
+        return "busy"
+    if value is False:
+        return "idle"
+    return "unknown"
+
 
 def normalize_pci_bdf(value: str | None) -> str | None:
     """Normalize domain-width variants to the stable bus:device.function suffix."""
@@ -144,9 +154,12 @@ class ProductionPreflightProvider:
             installed = self.executor.execute(
                 host, ("dpkg-query", "-W", "-f=${Status}\t${Version}\n", "--", package), 15,
             )
-            package_installed = installed.success and installed.stdout.startswith("install ok installed\t")
-            if package_installed:
+            if installed.success and installed.stdout.startswith("install ok installed\t"):
+                package_installed = True
                 package_version = installed.stdout.partition("\t")[2].strip() or None
+            elif not installed.timed_out and installed.exit_code == 1:
+                # dpkg-query documents exit 1 when no package matches. Other failures are unknown.
+                package_installed = False
             candidate_result = self.executor.execute(
                 host, ("apt-cache", "policy", "--", package), 15,
             )
@@ -159,16 +172,22 @@ class ProductionPreflightProvider:
                 "/var/lib/apt/lists/lock", "/var/cache/apt/archives/lock",
             ), 15)
             package_busy = locks.exit_code == 0 if locks.exit_code in {0, 1} else None
-            tools = ("apt-get", "apt-cache", "dpkg-query", "fuser")
-            available = all(self.executor.execute(host, ("command", "-v", tool), 10).success
-                            for tool in tools)
+            # `command` is a shell builtin and cannot be used by the direct-argv executor.
+            # Ubuntu's debianutils provides `which`; every name remains code-owned.
+            available = all(
+                self.executor.execute(host, ("which", "--", tool), 10).success
+                for tool in PACKAGE_TOOLS
+            )
             evidence_complete = evidence_complete and candidate_result.success and available \
-                and package_busy is not None
-            target_exists, current = True, "installed" if package_installed else "not-installed"
+                and package_busy is not None and package_installed is not None
+            target_exists = True
+            current = ({True: "installed", False: "not-installed"}.get(
+                package_installed, "unknown",
+            ))
             details.update({
                 "package": package, "package_state": current,
                 "candidate": package_candidate or "none",
-                "package_manager": "busy" if package_busy else "idle",
+                "package_manager": package_manager_state(package_busy),
             })
         return PreflightSnapshot(
             host_enabled=True, ssh_reachable=observation.ssh_ok, sudo_available=sudo.success,

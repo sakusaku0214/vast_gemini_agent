@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -15,11 +16,13 @@ from vast_agent.actions.models import (
     VerificationResult,
 )
 from vast_agent.actions.policies import PolicyEngine
+from vast_agent.actions.preflight import PACKAGE_TOOLS, ProductionPreflightProvider
 from vast_agent.actions.resolver import ActionIntentResolver
 from vast_agent.config import HostRegistry, OperationsSettings
 from vast_agent.conversation.state import ConversationStore
 from vast_agent.jobs.manager import JobManager
 from vast_agent.models.host import Host
+from vast_agent.models.observation import Observation, SystemSummary
 from vast_agent.models.tool_result import ToolResult
 from vast_agent.services.agent_service import AgentService
 from vast_agent.storage.database import Database
@@ -55,6 +58,60 @@ class Verify:
             status="VERIFIED" if self.success else "FAILED",
             summary=f"{request.parameters.package_name}: installed" if self.success else "absent",
         )
+
+
+class ProductionRemote:
+    """Command-aware remote for exercising the real package preflight collector."""
+
+    def __init__(self, *, dpkg_exit=1, dpkg_stdout="", fuser_exit=1):
+        self.dpkg_exit = dpkg_exit
+        self.dpkg_stdout = dpkg_stdout
+        self.fuser_exit = fuser_exit
+        self.calls = []
+
+    def execute(self, host, command, timeout, cancellation=None):
+        argv = tuple(command)
+        self.calls.append(argv)
+        if argv[:2] == ("sudo", "-n") and argv[2:] == ("true",):
+            return ToolResult(success=True, exit_code=0, duration_ms=1)
+        if argv[0] == "dpkg-query":
+            return ToolResult(
+                success=self.dpkg_exit == 0, exit_code=self.dpkg_exit,
+                stdout=self.dpkg_stdout, duration_ms=1,
+            )
+        if argv[:2] == ("apt-cache", "policy"):
+            return ToolResult(
+                success=True, exit_code=0, stdout="  Candidate: 2.12-1\n", duration_ms=1,
+            )
+        if argv[:3] == ("sudo", "-n", "fuser"):
+            return ToolResult(
+                success=self.fuser_exit == 0, exit_code=self.fuser_exit, duration_ms=1,
+            )
+        if argv[:2] == ("which", "--") and argv[2] in PACKAGE_TOOLS:
+            return ToolResult(
+                success=True, exit_code=0, stdout=f"/usr/bin/{argv[2]}\n", duration_ms=1,
+            )
+        raise AssertionError(f"unexpected argv: {argv}")
+
+
+class ProductionInspection:
+    def inspect_and_record(self, host, executor):
+        observation = Observation(
+            host=host.name, ssh_ok=True,
+            system=SystemSummary(filesystem_max_percent=10, failed_units=0),
+        )
+        ok = ToolResult(success=True, exit_code=0, duration_ms=1)
+        return SimpleNamespace(
+            observation=observation,
+            tool_results={"host_ping": ok, "get_system_health": ok},
+        )
+
+
+def production_state(remote):
+    settings = OperationsSettings(enabled=True, allowed_actions=["PACKAGE_INSTALL"])
+    provider = ProductionPreflightProvider(ProductionInspection(), remote, settings)
+    host = Host(name="garage-mag", address="192.0.2.8", ssh_user="agent")
+    return provider.collect(host, request()), remote
 
 
 def safe_state(**updates):
@@ -182,3 +239,61 @@ def test_resolver_only_emits_catalog_package_and_gemini_has_no_write_tool():
     declarations = str(FUNCTION_DECLARATIONS).casefold()
     assert "package_install" not in declarations
     assert "apt-get" not in declarations
+
+
+def test_production_preflight_uses_direct_which_argv_and_completes_when_tools_present():
+    state, remote = production_state(ProductionRemote(dpkg_exit=1, fuser_exit=1))
+
+    assert state.evidence_complete is True
+    assert state.package_installed is False
+    assert state.package_manager_busy is False
+    presence_calls = [call for call in remote.calls if call[0] == "which"]
+    assert presence_calls == [("which", "--", tool) for tool in PACKAGE_TOOLS]
+    assert not any(call[0] in {"command", "sh", "bash"} for call in remote.calls)
+
+
+def test_production_preflight_installed_and_unexpected_dpkg_failure_are_distinct():
+    installed, _ = production_state(ProductionRemote(
+        dpkg_exit=0, dpkg_stdout="install ok installed\t2.12-1\n", fuser_exit=1,
+    ))
+    assert installed.package_installed is True
+    assert installed.package_version == "2.12-1"
+    assert installed.evidence_complete is True
+
+    unknown, _ = production_state(ProductionRemote(dpkg_exit=2, fuser_exit=1))
+    assert unknown.package_installed is None
+    assert unknown.current_state == "unknown"
+    assert unknown.evidence_complete is False
+    decision = PolicyEngine().evaluate(request(), unknown, OperationsSettings(
+        enabled=True, allowed_actions=["PACKAGE_INSTALL"],
+    ))
+    assert decision.decision == "BLOCK"
+    assert "PREFLIGHT_INCOMPLETE" in decision.reasons
+
+
+@pytest.mark.parametrize(("busy", "label"), [
+    (None, "unknown"),
+    (False, "idle"),
+    (True, "busy"),
+])
+def test_proposal_renders_three_package_manager_states(tmp_path, busy, label):
+    _, actions, _, _ = coordinator(tmp_path, safe_state(package_manager_busy=busy))
+    proposal = actions.propose(request(), "7")
+    rendered = AgentService._proposal_text(proposal, "BLOCK" if busy is not False else "ALLOW")
+    assert f"package-manager={label}" in rendered
+    if busy is None:
+        decision = PolicyEngine().evaluate(request(), proposal.preflight_summary, actions.settings)
+        assert decision.decision == "BLOCK"
+        assert "PACKAGE_MANAGER_BUSY" in decision.reasons
+
+
+def test_production_preflight_unexpected_fuser_failure_is_unknown_and_blocked():
+    state, _ = production_state(ProductionRemote(dpkg_exit=1, fuser_exit=2))
+    assert state.package_manager_busy is None
+    assert state.details["package_manager"] == "unknown"
+    assert state.evidence_complete is False
+    decision = PolicyEngine().evaluate(request(), state, OperationsSettings(
+        enabled=True, allowed_actions=["PACKAGE_INSTALL"],
+    ))
+    assert decision.decision == "BLOCK"
+    assert "PACKAGE_MANAGER_BUSY" in decision.reasons

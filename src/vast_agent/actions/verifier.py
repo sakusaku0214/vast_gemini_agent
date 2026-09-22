@@ -33,7 +33,7 @@ class ProductionActionVerifier:
             if definition:
                 for executable in definition.executables:
                     found = self.preflight.executor.execute(
-                        host, ("command", "-v", executable), 10,
+                        host, ("which", "--", executable), 10,
                     ).success
                     executable_states.append(f"{executable}={'present' if found else 'missing'}")
                 for service in definition.services:

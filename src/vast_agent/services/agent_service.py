@@ -11,6 +11,7 @@ from vast_agent.actions.models import (
     ProposalStatus,
     RebootParameters,
 )
+from vast_agent.actions.preflight import package_manager_state
 from vast_agent.actions.resolver import ActionIntentResolver
 from vast_agent.agent.models import Route
 from vast_agent.agent.router import route_intent
@@ -214,7 +215,7 @@ class AgentService:
         if isinstance(proposal.parameters, PackageInstallParameters):
             package_preflight = (
                 f", package={state.current_state}, candidate={state.package_candidate or 'none'}, "
-                f"package-manager={'busy' if state.package_manager_busy else 'idle'}"
+                f"package-manager={package_manager_state(state.package_manager_busy)}"
             )
         return (f"⚠️ Proposal #{proposal.id}\nHost: {proposal.host}\n"
                 f"Action: {proposal.action_type}\nRisk: {proposal.risk_class}\n"
