@@ -435,3 +435,60 @@ def test_slow_approval_is_acknowledged_before_action_finishes():
     asyncio.run(scenario())
     assert events.count("complete") == 1
     assert events[-1] == "SUCCEEDED"
+
+
+def test_action_specific_evidence_ignores_unrelated_unsupported_capability():
+    from types import SimpleNamespace
+
+    from vast_agent.actions.preflight import ProductionPreflightProvider
+    from vast_agent.models.host import Capabilities
+    from vast_agent.models.observation import Observation, SystemSummary
+    from vast_agent.models.tool_result import ErrorCode
+    host = Host(name="h", address="192.0.2.8", ssh_user="a",
+        capabilities=Capabilities(nvidia=True, vast=True, docker=True, libvirt=False))
+    def ok(stdout=""):
+        return ToolResult(success=True, stdout=stdout, duration_ms=1)
+    unsupported = ToolResult(success=False, duration_ms=1, error_code=ErrorCode.TOOL_UNSUPPORTED)
+    results = {
+        "host_ping": ok(), "get_vast_status": ok("ActiveState=active"),
+        "get_service_status": ok("Id=vastai.service\nActiveState=active"),
+        "get_system_health": ok("/ 10%"), "get_vm_status": unsupported,
+    }
+    observation = Observation(host="h", ssh_ok=True,
+        system=SystemSummary(filesystem_max_percent=10), services={"vastai": "active"})
+    class Inspection:
+        def inspect_and_record(self, host, executor):
+            return SimpleNamespace(observation=observation, tool_results=results)
+    class Remote:
+        def execute(self, host, command, timeout, cancellation=None): return ok()
+    provider = ProductionPreflightProvider(Inspection(), Remote(), OperationsSettings(enabled=True))
+    request = ActionRequest(host="h", action_type=ActionType.RESTART_VAST_SERVICE,
+                            parameters=ServiceParameters(service="vastai.service"))
+    assert provider.collect(host, request).evidence_complete
+
+    libvirt = ActionRequest(host="h", action_type=ActionType.RESTART_LIBVIRT_SERVICE,
+                            parameters=ServiceParameters(service="libvirtd.service"))
+    state = provider.collect(host, libvirt)
+    assert not state.evidence_complete and not state.target_exists
+
+
+def test_action_specific_gpu_and_reboot_required_failures_are_incomplete():
+    from vast_agent.actions.preflight import ProductionPreflightProvider
+    from vast_agent.models.host import Capabilities
+    host = Host(name="h", address="192.0.2.8", ssh_user="a",
+        capabilities=Capabilities(nvidia=True, vast=False, docker=True, libvirt=False))
+    gpu = ActionRequest(host="h", action_type=ActionType.GPU_RESET,
+                        parameters=GPUParameters(gpu_index=0))
+    required = ProductionPreflightProvider._required_tools(host, gpu)
+    assert "get_pci_status" in required and "get_gpu_status" in required
+    assert "get_vm_status" not in required
+    reboot = ActionRequest(host="h", action_type=ActionType.HOST_REBOOT,
+        parameters={"kind": "reboot", "assessment": "HOST_REBOOT_CANDIDATE"})
+    reboot_required = ProductionPreflightProvider._required_tools(host, reboot)
+    assert "get_docker_status" in reboot_required
+    assert "get_vast_status" not in reboot_required
+
+    # A required declared-capability tool failure remains incomplete.
+    results = {name: ToolResult(success=True, duration_ms=1) for name in reboot_required}
+    results["get_docker_status"] = ToolResult(success=False, duration_ms=1)
+    assert not all(results[name].success for name in reboot_required)

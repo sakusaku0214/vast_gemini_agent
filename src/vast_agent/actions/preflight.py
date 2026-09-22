@@ -44,6 +44,10 @@ class ProductionPreflightProvider:
         record = self.inspection.inspect_and_record(host, self.executor)
         observation, results = record.observation, record.tool_results
         sudo = self.executor.execute(host, ("sudo", "-n", "true"), 10)
+        required_tools = self._required_tools(host, request)
+        evidence_complete = sudo.success and all(
+            name in results and results[name].success for name in required_tools
+        )
         target_exists, current = self._target(host, request, results, observation)
         gpu_binding = None
         mapping = True
@@ -80,13 +84,14 @@ class ProductionPreflightProvider:
             "failed_units": observation.system.failed_units,
             "filesystem_max_percent": filesystem,
             "docker_containers": len(containers),
-            "evidence_complete": all(r.success for r in results.values()),
+            "required_tools": ",".join(sorted(required_tools)),
+            "evidence_complete": evidence_complete,
         }
         details = {key: redact(str(value), self.secrets) for key, value in details.items()}
         return PreflightSnapshot(
             host_enabled=True, ssh_reachable=observation.ssh_ok, sudo_available=sudo.success,
             target_exists=target_exists,
-            evidence_complete=bool(results) and all(r.success for r in results.values()),
+            evidence_complete=evidence_complete,
             current_state=current,
             active_workload=bool(containers), running_vm=running_vm,
             d_state=observation.system.d_state_processes > 0,
@@ -104,13 +109,60 @@ class ProductionPreflightProvider:
             signatures=observation.signatures, details=details,
         )
 
+    @staticmethod
+    def _required_tools(host: Host, request: ActionRequest) -> set[str]:
+        """Return only evidence relevant to this action and declared host capabilities."""
+        common = {"host_ping"}
+        action = request.action_type
+        if action == ActionType.RESTART_VAST_SERVICE:
+            return common | {"get_vast_status", "get_service_status", "get_system_health"}
+        if action == ActionType.RESTART_DOCKER_SERVICE:
+            return common | {"get_service_status", "get_docker_status"}
+        if action == ActionType.RESTART_LIBVIRT_SERVICE:
+            return common | {"get_service_status", "get_vm_status"}
+        if action == ActionType.RESTART_VAST_CONTAINER:
+            return common | {"get_docker_status"}
+        if action == ActionType.GPU_RESET:
+            required = common | {
+                "get_gpu_status", "get_gpu_processes", "get_pci_status",
+                "get_d_state_processes", "get_kernel_gpu_errors",
+            }
+            if host.capabilities.libvirt: required.add("get_vm_status")
+            if host.capabilities.docker: required.add("get_docker_status")
+            return required
+        if action in {ActionType.VM_MODE_ENABLE, ActionType.VM_MODE_DISABLE}:
+            return common | {
+                "get_vm_status", "get_pci_status", "get_gpu_processes",
+                "get_d_state_processes",
+            }
+        # Reboot is broad, but an explicitly absent capability is not missing evidence.
+        required = common | {
+            "get_system_health", "get_d_state_processes", "get_service_status",
+            "get_journal_errors",
+        }
+        if host.capabilities.nvidia:
+            required |= {"get_gpu_status", "get_gpu_processes", "get_pci_status",
+                         "get_kernel_gpu_errors"}
+        if host.capabilities.vast:
+            required |= {"get_vast_status", "get_vast_logs"}
+        if host.capabilities.docker: required.add("get_docker_status")
+        if host.capabilities.libvirt: required.add("get_vm_status")
+        return required
+
     def _target(self, host, request, results, observation) -> tuple[bool, str]:
         params = request.parameters
         if isinstance(params, ServiceParameters):
+            capability = {
+                "vastai.service": host.capabilities.vast,
+                "docker.service": host.capabilities.docker,
+                "libvirtd.service": host.capabilities.libvirt,
+            }[params.service]
             show = results.get("get_service_status")
-            exists = bool(show and show.success and f"Id={params.service}" in show.stdout)
+            exists = bool(capability and show and show.success and f"Id={params.service}" in show.stdout)
             return exists, observation.services.get(params.service.removesuffix(".service"), "unknown")
         if isinstance(params, ContainerParameters):
+            if not host.capabilities.docker:
+                return False, "docker capability unavailable"
             result = results.get("get_docker_status")
             line = next((line for line in result.stdout.splitlines()[1:]
                          if len(line.split("|")) > 1 and line.split("|")[1] == params.container), None) if result else None
