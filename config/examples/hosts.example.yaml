@@ -1,0 +1,13 @@
+hosts:
+  example-gpu-host:
+    vast_id: 10000
+    address: 192.0.2.10
+    ssh_user: operator
+    ssh_port: 22
+    aliases: [example]
+    capabilities:
+      nvidia: true
+      docker: true
+      libvirt: true
+      vast: true
+    enabled: false

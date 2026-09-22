@@ -1,0 +1,5 @@
+0000:01:00.0 VGA compatible controller [0300]: NVIDIA Corporation Example [10de:0001]
+	Kernel driver in use: nvidia
+	Kernel modules: nvidia
+0000:01:00.1 Audio device [0403]: NVIDIA Corporation Example Audio [10de:0002]
+	Kernel driver in use: snd_hda_intel
