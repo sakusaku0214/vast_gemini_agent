@@ -5,8 +5,13 @@ foreach ($tool in @("git.exe", "ssh.exe", "ssh-keyscan.exe", "ssh-keygen.exe")) 
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { $missing += $tool }
 }
 $py = Get-Command py.exe -ErrorAction SilentlyContinue
-if (-not $py) { $missing += "Python launcher (py.exe) with Python 3.12" }
-elseif (& py -3.12 -c "import sys; assert sys.version_info[:2] == (3, 12)" 2>$null; $LASTEXITCODE -ne 0) { $missing += "Python 3.12" }
+if (-not $py) {
+    $missing += "Python launcher (py.exe) with Python 3.12"
+}
+else {
+    & py -3.12 -c "import sys; assert sys.version_info[:2] == (3, 12)" 2>$null
+    if ($LASTEXITCODE -ne 0) { $missing += "Python 3.12" }
+}
 if ($missing.Count) {
     Write-Host "Setup cannot continue. Missing prerequisites:" -ForegroundColor Red
     $missing | ForEach-Object { Write-Host " - $_" }

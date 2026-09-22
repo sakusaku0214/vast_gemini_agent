@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 from collections.abc import Sequence
+from os import PathLike
 from pathlib import Path
 
 from vast_agent.execution.base import redact
@@ -26,7 +28,7 @@ class SSHExecutor:
             "-o", f"ConnectTimeout={min(timeout, 30)}",
             "-o", "ServerAliveInterval=5",
             "-o", "ServerAliveCountMax=2",
-            "-o", f"UserKnownHostsFile={self.known_hosts}",
+            "-o", f"UserKnownHostsFile={openssh_path(self.known_hosts)}",
             "-o", "StrictHostKeyChecking=yes",
             "--", f"{host.ssh_user}@{host.address}",
             *command,
@@ -86,3 +88,13 @@ class SSHExecutor:
 def _decode(value: bytes | str | None) -> str:
     if value is None: return ""
     return value if isinstance(value, str) else value.decode("utf-8", errors="replace")
+
+
+def openssh_path(path: str | PathLike[str], *, windows: bool | None = None) -> str:
+    """Render one path as a safe value for an OpenSSH ``-o`` argument."""
+    value = str(path)
+    if any(character in value for character in ('"', "\r", "\n", "\x00")):
+        raise ValueError("OpenSSH paths must not contain quotes or control characters")
+    if windows if windows is not None else sys.platform == "win32":
+        value = value.replace("\\", "/")
+    return f'"{value}"' if any(character.isspace() for character in value) else value

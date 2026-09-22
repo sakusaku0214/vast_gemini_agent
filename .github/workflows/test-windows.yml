@@ -12,6 +12,20 @@ jobs:
           python-version: "3.12"
       - run: py -3.12 -m venv .venv
       - run: .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+      - name: Parse install.ps1 with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path .\scripts\install.ps1), [ref]$null, [ref]$errors)
+          if ($errors.Count) { $errors | Format-List; exit 1 }
+      - name: Parse install.ps1 with PowerShell 7
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path .\scripts\install.ps1), [ref]$null, [ref]$errors)
+          if ($errors.Count) { $errors | Format-List; exit 1 }
       - run: .\.venv\Scripts\python.exe -m ruff check .
       - run: .\.venv\Scripts\python.exe -m pytest
       - run: .\.venv\Scripts\python.exe -m vast_agent --runtime "$env:RUNNER_TEMP\vast-agent" install
