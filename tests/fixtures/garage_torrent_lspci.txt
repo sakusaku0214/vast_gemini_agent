@@ -1,17 +1,18 @@
-0000:01:00.0 VGA compatible controller [0300]: NVIDIA Corporation Device [10de:2684] (rev a1)
-	Subsystem: Gigabyte Technology Co., Ltd Device [1458:40bf]
-	Kernel driver in use: nvidia
-	Kernel modules: nouveau, nvidia_drm, nvidia
-0000:01:00.1 Audio device [0403]: NVIDIA Corporation Device [10de:22ba] (rev a1)
-	Subsystem: Gigabyte Technology Co., Ltd Device [1458:40bf]
-	Kernel driver in use: snd_hda_intel
-	Kernel modules: snd_hda_intel
+0000:01:00.0 VGA compatible controller [0300]: NVIDIA Corporation Device [10de:2bb1] (rev a1)
+        Subsystem: NVIDIA Corporation Device [10de:204b]
+        Kernel driver in use: nvidia
+        Kernel modules: nvidiafb, nouveau, nvidia_drm, nvidia
+0000:01:00.1 Audio device [0403]: NVIDIA Corporation Device [10de:22e8] (rev a1)
+        Subsystem: NVIDIA Corporation Device [10de:0000]
+        Kernel driver in use: snd_hda_intel
+        Kernel modules: snd_hda_intel
 --
-0000:0a:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:164e] (rev c1)
-	Subsystem: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:164e]
-	Kernel driver in use: amdgpu
-	Kernel modules: amdgpu
-0000:0a:00.1 Audio device [0403]: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:1640]
-	Subsystem: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:1640]
-	Kernel driver in use: snd_hda_intel
-	Kernel modules: snd_hda_intel
+0000:7a:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:13c0] (rev c1)
+        Subsystem: Micro-Star International Co., Ltd. [MSI] Device [1462:7e59]
+        Kernel driver in use: amdgpu
+        Kernel modules: amdgpu
+0000:7a:00.1 Audio device [0403]: Advanced Micro Devices, Inc. [AMD/ATI] Rembrandt Radeon High Definition Audio Controller [1002:1640]
+        Subsystem: Micro-Star International Co., Ltd. [MSI] Rembrandt Radeon High Definition Audio Controller [1462:1640]
+        Kernel driver in use: snd_hda_intel
+        Kernel modules: snd_hda_intel
+0000:7a:00.2 Encryption controller [1080]: Advanced Micro Devices, Inc. [AMD] Family 19h PSP/CCP [1022:1649]
