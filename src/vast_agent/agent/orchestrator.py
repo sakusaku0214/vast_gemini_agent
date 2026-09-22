@@ -10,35 +10,58 @@ from vast_agent.agent.gemini import GeminiClient
 from vast_agent.agent.models import InvestigationResult
 from vast_agent.agent.prompts import GENERAL_SYSTEM_PROMPT, SYSTEM_PROMPT
 from vast_agent.config import GeminiSettings
+from vast_agent.external_tools.registry import GeneralToolRegistry
 from vast_agent.jobs.cancellation import current_cancellation
 from vast_agent.storage.database import Database
 
 
 class InvestigationAgent:
     def __init__(self, client: GeminiClient, functions: FunctionExecutor, database: Database,
-                 settings: GeminiSettings) -> None:
+                 settings: GeminiSettings, general_tools: GeneralToolRegistry | None = None) -> None:
         self.client = client; self.functions = functions; self.database = database; self.settings = settings
+        self.general_tools = general_tools
 
     def answer_general(self, question: str) -> str:
-        """Answer without exposing host functions or any other tools."""
-        try:
-            response = self.client.interact(
-                model=self.settings.model,
-                inputs=[{"type": "text", "text": question}],
-                system_instruction=GENERAL_SYSTEM_PROMPT,
-                tools=[],
-                thinking_level=self.settings.default_thinking_level,
-                store=self.settings.store_interactions,
+        """Run a bounded general loop exposing only the separate general READ registry."""
+        start = time.monotonic(); tool_calls = 0; llm_calls = 0
+        inputs: list[dict[str, object]] = [{"type": "text", "text": question}]
+        declarations = self.general_tools.declarations if self.general_tools else []
+        while (llm_calls < self.settings.max_llm_calls
+               and llm_calls < self.settings.max_agent_steps
+               and time.monotonic() - start < self.settings.agent_wall_time_seconds):
+            try:
+                response = self.client.interact(
+                    model=self.settings.model, inputs=inputs,
+                    system_instruction=GENERAL_SYSTEM_PROMPT, tools=declarations,
+                    thinking_level=self.settings.default_thinking_level,
+                    store=self.settings.store_interactions,
+                )
+            except Exception:  # API boundary; never expose provider or credential details
+                return "Gemini unavailable. 一般質問に回答できません。"
+            llm_calls += 1
+            self.database.save_token_usage(
+                "general_tool" if response.function_calls else "general", self.settings.model,
+                self.settings.default_thinking_level, response.usage,
             )
-        except Exception:  # API boundary; never expose provider or credential details
-            return "Gemini unavailable. 一般質問に回答できません。"
-        self.database.save_token_usage(
-            "general", self.settings.model, self.settings.default_thinking_level, response.usage,
-        )
-        if not response.output_text:
-            return "Gemini unavailable. 一般質問への回答を取得できませんでした。"
-        # Discord output remains bounded even if a provider ignores the prompt limit.
-        return response.output_text[:1200]
+            inputs.extend(response.steps)
+            if response.output_text and not response.function_calls:
+                return response.output_text[:1200]
+            if not response.function_calls:
+                return "Gemini unavailable. 一般質問への回答を取得できませんでした。"
+            for call in response.function_calls:
+                if not self.general_tools:
+                    return "この質問に利用できるREAD toolはありません。"
+                if tool_calls >= self.settings.max_tool_calls:
+                    return "一般READ toolの呼び出し上限に達したため、安全に終了しました。"
+                output = self.general_tools.execute(call.name, call.arguments)
+                tool_calls += 1
+                inputs.append({
+                    "type": "function_result", "name": call.name, "call_id": call.call_id,
+                    "result": [{"type": "text", "text": json.dumps(
+                        {"untrusted_tool_result": output}, ensure_ascii=False,
+                    )}],
+                })
+        return "一般質問の処理上限に達したため、安全に終了しました。"
 
     def investigate(self, host: str, question: str) -> InvestigationResult:
         start = time.monotonic(); tool_calls = 0; llm_calls = 0

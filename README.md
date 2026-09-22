@@ -116,6 +116,30 @@ GEMINI_API_KEY=your-key-here
 SQLiteの `token_usage` に保存します。`doctor` は設定/key有無だけを確認しAPIを呼びません。
 疎通確認はtoken消費を抑えた `gemini-check` を明示的に実行してください。
 
+## General READ capabilities
+
+一般会話ではhost調査用functionとは分離されたregistryから、Geminiが必要なREAD toolだけを選びます。
+現在のcapabilityは **Weather**（Open-Meteo）、**FX**（Frankfurter/ECB）、**Web search**
+（Brave Search）、およびregistry由来の **Capability listing** です。安定した一般知識にはtoolを強制せず、
+「今日」「現在」「最新」の情報には該当toolを使います。外部結果はすべてuntrusted evidenceとして扱います。
+
+```yaml
+external_tools:
+  default_weather_location: null  # nullなら場所の明示が必要。IP位置推定はしません
+  request_timeout_seconds: 8
+  max_response_bytes: 262144
+  search_provider: disabled       # brave にする場合のみSEARCH_API_KEYが必要
+```
+
+Weather/FXはkey不要の公開HTTPS providerへ、Web searchは設定時だけallowlist済みproviderへ接続します。
+HTTPS、provider host、timeout、response size、query/argument sizeを制限し、redirect、private/local address、
+任意URL fetch、cookie、user-controlled headerを許可しません。provider障害時は過去知識で現在値を補いません。
+検索はsnippetを資料として要約するもので、リンク先本文の正しさを保証するものではありません。
+
+これらはすべて一般用途の **READ-only** capabilityです。shell/SSH、install、file/config write、restart、
+reset、VM/Docker/GPU mutation、ActionRequestは一切公開されません。下記のapproval-gated WRITE経路とは
+完全に別で、general toolからWRITE proposalを作ることもできません。
+
 ## Job cancellation semantics
 
 cancelはローカルの待機処理を止め、実行中SSH subprocessへterminateを送り、timeout時にはkillします。

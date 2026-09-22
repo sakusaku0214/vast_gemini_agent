@@ -42,6 +42,16 @@ class ConversationSettings(BaseModel):
     remember_last_host: bool = True
 
 
+class ExternalToolsSettings(BaseModel):
+    """Fail-closed configuration for general, network-backed READ capabilities."""
+
+    model_config = ConfigDict(extra="forbid")
+    default_weather_location: str | None = Field(default=None, max_length=200)
+    request_timeout_seconds: float = Field(default=8, ge=1, le=30)
+    max_response_bytes: int = Field(default=262_144, ge=1024, le=1_048_576)
+    search_provider: Literal["disabled", "brave"] = "disabled"
+
+
 AllowedAction = Literal[
     "RESTART_VAST_SERVICE",
     "RESTART_DOCKER_SERVICE",
@@ -119,6 +129,16 @@ def load_operations_settings(path: Path) -> OperationsSettings:
         raise ConfigError(f"Invalid operations configuration: {exc}") from exc
 
 
+def load_external_tools_settings(path: Path) -> ExternalToolsSettings:
+    if not path.exists():
+        return ExternalToolsSettings()
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return ExternalToolsSettings.model_validate(raw.get("external_tools", {}))
+    except (OSError, yaml.YAMLError, ValidationError, TypeError, AttributeError) as exc:
+        raise ConfigError(f"Invalid external tools configuration: {exc}") from exc
+
+
 class HostRegistry(BaseModel):
     hosts: dict[str, Host]
 
@@ -161,7 +181,7 @@ def initialize_config(paths: RuntimePaths, examples: Path | None = None) -> None
     paths.create()
     defaults = {
         paths.hosts_file: "hosts: {}\n",
-        paths.agent_file: "ssh:\n  connect_timeout: 10\n  server_alive_interval: 5\n  server_alive_count_max: 2\ngemini:\n  model: gemini-3.8-flash\n  api_version: v1\n  default_thinking_level: low\n  investigate_thinking_level: medium\n  allow_high_thinking: true\n  store_interactions: false\ndiscord:\n  enabled: true\njobs:\n  max_parallel_hosts: 3\n  max_recent_jobs: 20\nconversation:\n  remember_last_host: true\noperations:\n  enabled: false\n  allowed_actions: []\n  approval_ttl_seconds: 600\n  action_timeout_seconds: 60\n  reboot_recovery_timeout_seconds: 300\n  reboot_poll_seconds: 10\n  enable_vms_script: null\n",
+        paths.agent_file: "ssh:\n  connect_timeout: 10\n  server_alive_interval: 5\n  server_alive_count_max: 2\ngemini:\n  model: gemini-3.8-flash\n  api_version: v1\n  default_thinking_level: low\n  investigate_thinking_level: medium\n  allow_high_thinking: true\n  store_interactions: false\ndiscord:\n  enabled: true\njobs:\n  max_parallel_hosts: 3\n  max_recent_jobs: 20\nconversation:\n  remember_last_host: true\nexternal_tools:\n  default_weather_location: null\n  request_timeout_seconds: 8\n  max_response_bytes: 262144\n  search_provider: disabled\noperations:\n  enabled: false\n  allowed_actions: []\n  approval_ttl_seconds: 600\n  action_timeout_seconds: 60\n  reboot_recovery_timeout_seconds: 300\n  reboot_poll_seconds: 10\n  enable_vms_script: null\n",
     }
     for target, content in defaults.items():
         if not target.exists():
