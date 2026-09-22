@@ -12,6 +12,9 @@ package-install, restart, reset, reboot, or other mutation function.
 READ budget exhaustion does not discard evidence already gathered: when possible, the final
 reserved Gemini call synthesizes that evidence with no tools available. Narrow questions should
 stop as soon as the smallest relevant evidence set makes a full or explicitly partial answer possible.
+Specialized READs are preferred for each explicit sub-goal, while broad evidence gathering requires a
+concrete unresolved question. Final-result schema validation failures are logged with bounded structural
+diagnostics and typed locations only, never with raw model output.
 
 A new high-level capability is appropriate only when dedicated backend semantics are required,
 state or acquisition semantics are special, or safe composition of existing READ tools is

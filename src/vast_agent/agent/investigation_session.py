@@ -33,6 +33,7 @@ class InvestigationSession(BaseModel):
     goal: str
     round: int = 0
     tool_calls: list[str] = Field(default_factory=list)
+    selected_calls: list[dict[str, object]] = Field(default_factory=list)
     evidence: list[EvidenceRecord] = Field(default_factory=list)
     answered_questions: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
@@ -57,12 +58,23 @@ class InvestigationSession(BaseModel):
         # The last LLM round is reserved for synthesis of evidence gathered previously.
         return len(self.tool_calls) < self.max_tool_calls and self.round < self.max_rounds
 
-    def add(self, tool_name: str, arguments: dict[str, object], evidence: EvidenceRecord) -> bool:
+    def add(
+        self,
+        tool_name: str,
+        arguments: dict[str, object],
+        evidence: EvidenceRecord,
+        *,
+        trace_arguments: dict[str, object] | None = None,
+    ) -> bool:
         key = self.call_key(tool_name, arguments)
         if key in self.tool_calls:
             self.stop_reason = StopReason.NO_NEW_EVIDENCE
             return False
         self.tool_calls.append(key)
+        if trace_arguments is not None:
+            # Only the caller's schema-validated, code-owned argument model may reach the trace.
+            safe_arguments = {key: value for key, value in trace_arguments.items() if key != "host"}
+            self.selected_calls.append({"tool": tool_name, "arguments": safe_arguments})
         evidence = evidence.model_copy(update={
             "target_host": self.target_host,
             "arguments": arguments,
@@ -82,6 +94,7 @@ class InvestigationSession(BaseModel):
     def trace(self) -> dict[str, object]:
         return {
             "selected_tools": [key.split(":", 2)[1] for key in self.tool_calls],
+            "selected_calls": self.selected_calls,
             "rounds": self.round,
             "stop_reason": self.stop_reason,
             "evidence_sources": [item.source for item in self.evidence],
