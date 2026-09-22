@@ -33,3 +33,21 @@ def test_non_literal_machines_rejected(tmp_path):
     source = tmp_path / "bad.py"
     source.write_text("MACHINES = dict(secret='x')", encoding="utf-8")
     with pytest.raises(ValueError): extract_machines(source)
+
+
+def test_optional_expected_gpu_count_loads_and_defaults_fail_closed(tmp_path):
+    path = tmp_path / "hosts.yaml"
+    path.write_text(
+        "hosts:\n"
+        "  configured:\n"
+        "    address: 192.0.2.1\n"
+        "    ssh_user: user\n"
+        "    expected_gpu_count: 2\n"
+        "  legacy:\n"
+        "    address: 192.0.2.2\n"
+        "    ssh_user: user\n",
+        encoding="utf-8",
+    )
+    hosts = load_hosts(path).hosts
+    assert hosts["configured"].expected_gpu_count == 2
+    assert hosts["legacy"].expected_gpu_count is None

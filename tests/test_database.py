@@ -43,7 +43,7 @@ def test_inspection_persists_runs_logs_and_deduplicates_incident(tmp_path, host)
     assert set(first.incident_ids) == {"NVIDIA_FALLEN_OFF_BUS"}
     with sqlite3.connect(database.path) as db:
         assert db.execute("SELECT count(*) FROM observations").fetchone()[0] == 2
-        assert db.execute("SELECT count(*) FROM tool_runs").fetchone()[0] == 8
+        assert db.execute("SELECT count(*) FROM tool_runs").fetchone()[0] == 10
         assert db.execute("SELECT count(*) FROM incidents").fetchone()[0] == 1
         opened, last_seen = db.execute(
             "SELECT opened_at,last_seen_at FROM incidents",

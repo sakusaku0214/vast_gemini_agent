@@ -126,7 +126,9 @@ def parse_service_show(text: str) -> dict[str, str]:
     }
 
 
-def build_observation(host: str, results: dict[str, ToolResult]) -> Observation:
+def build_observation(
+    host: str, results: dict[str, ToolResult], expected_gpu_count: int | None = None,
+) -> Observation:
     ping = results.get("host_ping")
     ssh_ok = bool(ping and ping.success)
     gpu_result = results.get("get_gpu_status")
@@ -157,6 +159,7 @@ def build_observation(host: str, results: dict[str, ToolResult]) -> Observation:
         host=host, ssh_ok=ssh_ok, ssh_observed=ping is not None,
         gpu=GpuSummary(
             **pci,
+            expected_gpu_count=expected_gpu_count,
             nvml_observed=_observed(gpu_result),
             pci_observed=_observed(pci_result),
             pci_ok=bool(pci_result and pci_result.success),

@@ -29,6 +29,7 @@ class GpuSummary(BaseModel):
     pci_observed: bool = False
     pci_ok: bool = False
     pci_count: int = 0
+    expected_gpu_count: int | None = None
     nvml_ok: bool = False
     nvml_error: str | None = None
     nvidia_bound: int = 0
@@ -37,6 +38,21 @@ class GpuSummary(BaseModel):
     unknown_bound: int = 0
     devices: list[GpuDevice] = Field(default_factory=list)
     pci_devices: list[PciDevice] = Field(default_factory=list)
+
+    @property
+    def all_bound_to_vfio(self) -> bool:
+        """Whether complete PCI evidence proves every physical GPU uses VFIO."""
+        return (
+            self.pci_observed
+            and self.pci_ok
+            and self.expected_gpu_count is not None
+            and self.pci_count > 0
+            and self.pci_count == self.expected_gpu_count
+            and self.nvidia_bound == 0
+            and self.vfio_bound == self.pci_count
+            and self.unbound == 0
+            and self.unknown_bound == 0
+        )
 
 
 class SystemSummary(BaseModel):
