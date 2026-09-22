@@ -56,6 +56,8 @@ class GeneralToolRegistry:
         tool = self._tools.get(name)
         if tool is None:
             return {"error": "FUNCTION_NOT_ALLOWED"}
+        if not tool.available:
+            return {"error": "FUNCTION_NOT_AVAILABLE", "function": name}
         try:
             args = tool.argument_model.model_validate(arguments)
             value = tool.executor(args)

@@ -244,9 +244,18 @@ def test_service_host_read_and_write_never_reach_general_tools(tmp_path):
     assert weather.calls == [] and fx.calls == [] and search.calls == []
 
 
-def test_unavailable_search_is_discoverable_but_not_declared():
+def test_unavailable_search_is_discoverable_but_not_declared(monkeypatch):
+    provider_calls = []
+    monkeypatch.setattr(
+        "vast_agent.external_tools.providers.UnavailableSearchProvider.search",
+        lambda self, query, max_results: provider_calls.append((query, max_results)),
+    )
     disabled = build_general_registry(ExternalToolsSettings(search_provider="disabled"), {})
     assert "web_search" not in {item["name"] for item in disabled.declarations}
+    assert disabled.execute("web_search", {"query": "current news"}) == {
+        "error": "FUNCTION_NOT_AVAILABLE", "function": "web_search",
+    }
+    assert provider_calls == []
     listing = disabled.execute("list_capabilities", {})
     search = next(item for item in listing["untrusted_evidence"]["available_capabilities"]
                   if item["name"] == "web_search")
@@ -256,3 +265,8 @@ def test_unavailable_search_is_discoverable_but_not_declared():
         ExternalToolsSettings(search_provider="brave"), {"SEARCH_API_KEY": "configured"},
     )
     assert "web_search" in {item["name"] for item in enabled.declarations}
+
+    weather = FakeWeather()
+    available = build_general_registry(ExternalToolsSettings(), {}, weather=weather)
+    assert "untrusted_evidence" in available.execute("get_weather", {"location": "岡山"})
+    assert weather.calls == [("岡山", 1)]
