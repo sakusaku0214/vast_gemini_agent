@@ -5,6 +5,7 @@ import time
 
 from pydantic import ValidationError
 
+from vast_agent.actions.capability_bridge import ground_capability_gap
 from vast_agent.agent.evidence import compact_evidence
 from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import GeminiClient
@@ -107,6 +108,9 @@ class InvestigationAgent:
             if response.output_text and not response.function_calls:
                 try:
                     result = InvestigationResult.model_validate_json(response.output_text)
+                    result.capability_gaps = [
+                        ground_capability_gap(gap, session) for gap in result.capability_gaps
+                    ]
                     if result.stop_reason is None:
                         result.stop_reason = StopReason.ANSWERABLE
                     return result

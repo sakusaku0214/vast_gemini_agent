@@ -10,6 +10,8 @@ class EvidenceRecord(BaseModel):
     """Compact, explicitly untrusted view of one READ result."""
 
     source: str
+    target_host: str | None = None
+    arguments: dict[str, object] = Field(default_factory=dict)
     status: Literal["available", "evidence_missing", "tool_unavailable"]
     facts: dict[str, object] = Field(default_factory=dict)
     signatures: list[str] = Field(default_factory=list)

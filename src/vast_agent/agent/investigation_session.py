@@ -54,7 +54,8 @@ class InvestigationSession(BaseModel):
         return sum(len(item.model_dump_json()) for item in self.evidence)
 
     def can_call(self) -> bool:
-        return len(self.tool_calls) < self.max_tool_calls and self.round <= self.max_rounds
+        # The last LLM round is reserved for synthesis of evidence gathered previously.
+        return len(self.tool_calls) < self.max_tool_calls and self.round < self.max_rounds
 
     def add(self, tool_name: str, arguments: dict[str, object], evidence: EvidenceRecord) -> bool:
         key = self.call_key(tool_name, arguments)
@@ -62,6 +63,10 @@ class InvestigationSession(BaseModel):
             self.stop_reason = StopReason.NO_NEW_EVIDENCE
             return False
         self.tool_calls.append(key)
+        evidence = evidence.model_copy(update={
+            "target_host": self.target_host,
+            "arguments": arguments,
+        })
         remaining = max(0, self.max_total_evidence_chars - self.evidence_chars)
         if remaining == 0:
             self.stop_reason = StopReason.BOUND_REACHED

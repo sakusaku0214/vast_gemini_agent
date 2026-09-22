@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 
 class Route(StrEnum):
@@ -143,6 +143,8 @@ class CapabilityGap(BaseModel):
     evidence: list[str] = Field(default_factory=list, max_length=12)
     candidate_package: str | None = Field(default=None, max_length=128)
     confidence: Literal["low", "medium", "high"] = "low"
+    # This cannot be supplied by Gemini JSON. Only the application-side evidence validator sets it.
+    _acquisition_grounded: bool = PrivateAttr(default=False)
 
     @field_validator("capability_id")
     @classmethod

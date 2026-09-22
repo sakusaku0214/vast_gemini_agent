@@ -14,6 +14,10 @@ state or acquisition semantics are special, or safe composition of existing READ
 insufficient. Tool failure is `EVIDENCE_MISSING`, a registered backend unavailable in context is
 `TOOL_UNAVAILABLE`, and only an absent ability is `CAPABILITY_GAP`. Package acquisition remains in
 the existing application-owned, approval-gated bridge and is never performed by the planner.
+Model-reported software status is non-authoritative: the bridge can propose acquisition only after
+the same target-bound investigation session contains successful, typed package and executable READ
+evidence matching code-owned acquisition metadata. Missing, failed, cross-host, or contradictory
+evidence fails closed as unknown; an inactive service is degraded rather than package-missing.
 
 ## Safe capability acquisition
 
