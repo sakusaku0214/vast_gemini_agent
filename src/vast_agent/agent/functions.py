@@ -11,6 +11,7 @@ from vast_agent.agent.host_read import (
 from vast_agent.agent.host_read import (
     HOST_READ_CAPABILITIES,
     discover,
+    execute_diagnostic,
     execute_generic,
 )
 from vast_agent.config import HostRegistry
@@ -53,6 +54,8 @@ class FunctionExecutor:
             return {"error": "TOOL_UNSUPPORTED"}
         if name == "list_host_capabilities":
             result = discover(host)
+        elif capability.executor == "diagnostic":
+            result = execute_diagnostic(name, host, self.remote)
         elif capability.executor == "generic":
             result = execute_generic(name, args, host, self.remote)
         elif name == "get_recent_incidents":

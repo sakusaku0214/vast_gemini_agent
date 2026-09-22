@@ -37,7 +37,7 @@ def capture_remote_command(monkeypatch, tmp_path, host, command) -> tuple[str, l
     [
         (
             "get_pci_status",
-            "sh -c 'lspci -Dnnk | grep -A3 -Ei '\"'\"'VGA|3D|Audio'\"'\"''",
+            "lspci -Dnnk",
         ),
         (
             "get_system_health",
@@ -68,17 +68,14 @@ def test_registered_shell_tool_is_one_shell_safe_remote_command(
     assert popen.call_args.kwargs.get("shell") is not True
 
 
-def test_garage_x570_pci_command_keeps_entire_script_as_dash_c_argument(
+def test_pci_command_is_direct_fixed_argv(
     monkeypatch, tmp_path, host,
 ):
     command = TOOLS["get_pci_status"].command
     remote_command, _, _ = capture_remote_command(monkeypatch, tmp_path, host, command)
 
     remote_argv = shlex.split(remote_command)
-    assert remote_argv == [
-        "sh", "-c", "lspci -Dnnk | grep -A3 -Ei 'VGA|3D|Audio'",
-    ]
-    assert len(remote_argv) == 3
+    assert remote_argv == ["lspci", "-Dnnk"]
 
 
 @pytest.mark.parametrize(

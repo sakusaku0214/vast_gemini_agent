@@ -26,6 +26,8 @@ def test_existing_capabilities_are_declarative_and_resolve_backends():
         "traffic_history": "query_traffic_history",
         "network_interface_details": "inspect_interface",
         "nvme_health": "query_nvme_health",
+        "gpu_diagnostics": "query_gpu_diagnostics",
+        "docker_diagnostics": "query_docker_diagnostics",
     }
     assert {item.capability_id: item.read_backend.tool_name
             for item in CAPABILITY_REGISTRY.definitions} == expected

@@ -25,7 +25,9 @@ TOOLS: Final[dict[str, ToolMetadata]] = {
     "get_system_health": ToolMetadata("get_system_health", "Filesystem and failed-unit health", "read_only", (), 20, ("sh", "-c", "df -P; systemctl --failed --no-legend --plain")),
     "get_gpu_status": ToolMetadata("get_gpu_status", "NVIDIA GPU metrics", "read_only", ("nvidia",), 20, ("nvidia-smi", "--query-gpu=index,uuid,name,temperature.gpu,utilization.gpu,memory.used,memory.total,pstate,pci.bus_id", "--format=csv,noheader,nounits")),
     "get_gpu_processes": ToolMetadata("get_gpu_processes", "NVIDIA compute processes", "read_only", ("nvidia",), 20, ("nvidia-smi", "--query-compute-apps=gpu_uuid,pid,process_name,used_memory", "--format=csv,noheader,nounits")),
-    "get_pci_status": ToolMetadata("get_pci_status", "GPU PCI bindings", "read_only", ("nvidia",), 20, ("sh", "-c", "lspci -Dnnk | grep -A3 -Ei 'VGA|3D|Audio'")),
+    # PCI discovery remains available when NVML/NVIDIA support is absent (for example VFIO).
+    # The parser selects only NVIDIA display and companion audio functions.
+    "get_pci_status": ToolMetadata("get_pci_status", "GPU PCI bindings", "read_only", (), 20, ("lspci", "-Dnnk")),
     "get_kernel_gpu_errors": ToolMetadata("get_kernel_gpu_errors", "Kernel GPU errors", "read_only", ("nvidia",), 20, ("journalctl", "-k", "-b", "--no-pager", "-p", "warning")),
     "get_d_state_processes": ToolMetadata("get_d_state_processes", "Uninterruptible processes", "read_only", (), 15, ("ps", "-eo", "stat,pid,comm", "--no-headers")),
     "get_vast_status": ToolMetadata("get_vast_status", "Vast service state", "read_only", ("vast",), 15, ("systemctl", "show", "vastai.service", "--property=ActiveState,MainPID,SubState")),
