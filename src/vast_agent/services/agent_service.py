@@ -15,6 +15,7 @@ from vast_agent.agent.models import Route
 from vast_agent.agent.router import route_intent
 from vast_agent.config import HostRegistry
 from vast_agent.conversation.state import ConversationState, ConversationStore
+from vast_agent.diagnostics.parser import summarize_docker_status, summarize_vm_status
 from vast_agent.execution.base import redact
 from vast_agent.jobs.cancellation import current_cancellation
 from vast_agent.jobs.locks import LockClass
@@ -272,7 +273,7 @@ class AgentService:
             devices = observation.gpu.devices
             return ", ".join(f"{d.model or 'GPU'} {d.temperature_c}°C" for d in devices) or "no GPU"
         if scope == "vast":
-            return f"vast={observation.services.get('vastai.service', 'unknown')}"
+            return f"vast={observation.services.get('vastai', 'unknown')}"
         return f"disk={observation.system.filesystem_max_percent}% failed={observation.system.failed_units}"
 
     @staticmethod
@@ -294,14 +295,19 @@ class AgentService:
             return (f"{header}\nPCI count: {gpu.pci_count}\nnvidia: {gpu.nvidia_bound}\n"
                     f"vfio: {gpu.vfio_bound}\nunbound: {gpu.unbound}\nSignatures: {signatures}")
         if scope == "vast":
-            return f"{header}\nvastai.service: {observation.services.get('vastai.service', 'unknown')}\nSignatures: {signatures}"
+            return f"{header}\nvastai: {observation.services.get('vastai', 'unknown')}\nSignatures: {signatures}"
         if scope == "docker":
-            containers = observation.details.get("docker", "not available")
-            return (f"{header}\ndocker.service: {observation.services.get('docker.service', 'unknown')}\n"
-                    f"Containers: {containers}\nSignatures: {signatures}")
+            containers = summarize_docker_status(str(observation.details.get("docker_status", "")))
+            return (f"{header}\ndocker: {observation.services.get('docker', 'unknown')}\n"
+                    f"Containers: total={containers['total']}, running={containers['running']}, "
+                    f"stopped={containers['stopped']}\nSignatures: {signatures}")
         if scope == "vm":
-            vm = observation.details.get("vm", "not available")
-            return (f"{header}\nVM: {vm}\nPCI binding: nvidia={gpu.nvidia_bound}, "
+            vm = summarize_vm_status(str(observation.details.get("vm_status", "")))
+            domains = ", ".join(
+                f"{domain['name']}={domain['state']}" for domain in vm["domains"][:5]
+            ) or "none"
+            return (f"{header}\nVMs: total={vm['total']}, running={vm['running']}\n"
+                    f"Domains: {domains}\nPCI binding: nvidia={gpu.nvidia_bound}, "
                     f"vfio={gpu.vfio_bound}, unbound={gpu.unbound}\nSignatures: {signatures}")
         system = observation.system
         services = ", ".join(f"{name}={value}" for name, value in observation.services.items()) or "none"

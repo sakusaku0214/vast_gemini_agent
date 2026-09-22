@@ -13,6 +13,7 @@ from vast_agent.conversation.state import ConversationStore
 from vast_agent.jobs.manager import JobManager
 from vast_agent.models.host import Host
 from vast_agent.models.observation import Observation, SystemSummary
+from vast_agent.models.tool_result import ToolResult
 from vast_agent.services.agent_service import AgentService
 from vast_agent.storage.database import Database
 
@@ -123,7 +124,7 @@ def test_system_formatter_does_not_render_gpu_template():
     observation = Observation(
         host="garage-mag", ssh_ok=True,
         system=SystemSummary(filesystem_max_percent=71, failed_units=1, d_state_processes=2),
-        services={"vastai.service": "active"}, signatures=["DISK_PRESSURE"],
+        services={"vastai": "active"}, signatures=["DISK_PRESSURE"],
     )
 
     rendered = AgentService._format_observation(observation, "system")
@@ -133,11 +134,51 @@ def test_system_formatter_does_not_render_gpu_template():
     assert "GPU:" not in rendered
 
 
+def test_service_formatters_use_canonical_observation_keys():
+    observation = Observation(
+        host="garage-mag", ssh_ok=True, services={"vastai": "active", "docker": "active"},
+    )
+
+    assert "vastai: active" in AgentService._format_observation(observation, "vast")
+    assert "unknown" not in AgentService._format_observation(observation, "vast")
+    assert "docker: active" in AgentService._format_observation(observation, "docker")
+
+
+def test_docker_and_vm_tool_output_produces_bounded_summaries():
+    from vast_agent.diagnostics.parser import build_observation
+
+    def ok(stdout=""):
+        return ToolResult(success=True, stdout=stdout, duration_ms=1)
+    observation = build_observation("garage-mag", {
+        "host_ping": ok(),
+        "get_docker_status": ok(
+            "active\nabc|worker|Up 2 hours|image:latest\ndef|old|Exited (0) 1 day ago|image:old\n",
+        ),
+        "get_vm_status": ok(
+            " Id   Name       State\n---------------------------\n"
+            " 1    compute    running\n -    archive    shut off\n"
+            "1234 /usr/bin/qemu-system-x86_64 -name guest=compute\n",
+        ),
+    })
+
+    assert "docker_status" in observation.details
+    assert "vm_status" in observation.details
+    docker = AgentService._format_observation(observation, "docker")
+    vm = AgentService._format_observation(observation, "vm")
+    assert "total=2, running=1, stopped=1" in docker
+    assert "not available" not in docker
+    assert "VMs: total=2, running=1" in vm
+    assert "compute=running" in vm and "archive=shut off" in vm
+    assert "not available" not in vm
+
+
 def test_routing_order_and_gemini_function_boundary(tmp_path):
     service = make_service(tmp_path)
     registry = service.registry
 
     assert route_intent("magのGPU温度", registry).route == Route.DETERMINISTIC
+    disk = route_intent("magのディスク状況確認できる？", registry)
+    assert disk.route == Route.DETERMINISTIC and disk.scope == "system"
     assert route_intent("magにvnstat入ってる？", registry).route == Route.AGENT
     assert route_intent("自然言語理解できる？", registry).route == Route.UNKNOWN
     assert route_intent("magを再起動して", registry).route == Route.UNSUPPORTED_WRITE
