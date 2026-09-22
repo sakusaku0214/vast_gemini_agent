@@ -88,7 +88,7 @@ def test_last_round_is_reserved_for_synthesis_after_tool_call(tmp_path, host):
 
 def test_exact_repeat_is_deduplicated(tmp_path, host):
     repeated = {"host": host.name, "scope": "routes"}
-    agent, _, remote = make_agent(tmp_path, host, [
+    agent, client, remote = make_agent(tmp_path, host, [
         call("inspect_network", repeated), call("inspect_network", repeated, "2"),
         answer("used retained network evidence"),
     ])
@@ -96,6 +96,8 @@ def test_exact_repeat_is_deduplicated(tmp_path, host):
     assert result.summary == "used retained network evidence"
     assert result.stop_reason == "ANSWERABLE"
     assert remote.calls.count("inspect_network:routes") == 1
+    duplicate = _function_result_payload(client.requests[-1]["inputs"], "2")
+    assert duplicate == {"read_executed": False, "reason": "DUPLICATE_READ"}
 
 
 def test_tool_budget_stops_pending_read_and_uses_tool_free_synthesis(tmp_path, host):
@@ -113,6 +115,8 @@ def test_tool_budget_stops_pending_read_and_uses_tool_free_synthesis(tmp_path, h
     assert client.requests[-1]["tools"] == []
     assert "No more tools are available" in json.dumps(client.requests[-1]["inputs"])
     assert remote.calls == ["inspect_network:routes"]
+    blocked = _function_result_payload(client.requests[-1]["inputs"], "2")
+    assert blocked["read_executed"] is False
 
 
 def test_final_synthesis_error_preserves_existing_evidence(tmp_path, host):
@@ -164,8 +168,48 @@ def test_evidence_limit_rejection_still_allows_synthesis(tmp_path, host):
     assert "first" in json.dumps(client.requests[-1]["inputs"])
 
 
+def test_evidence_bound_truthfully_replays_executed_and_pending_reads(
+    tmp_path, host, monkeypatch,
+):
+    first = {"type": "function_call", "name": "inspect_network",
+             "arguments": {"host": host.name, "scope": "routes"}, "id": "executed"}
+    second = {"type": "function_call", "name": "query_nvme_health",
+              "arguments": {"host": host.name}, "id": "pending"}
+    agent, client, remote = make_agent(tmp_path, host, [
+        AgentResponse(steps=[first, second]), answer("synthesized after evidence bound"),
+    ])
+    original_add = InvestigationSession.add
+
+    def reject_for_evidence_bound(session, tool_name, arguments, evidence):
+        session.max_total_evidence_chars = 0
+        return original_add(session, tool_name, arguments, evidence)
+
+    monkeypatch.setattr(InvestigationSession, "add", reject_for_evidence_bound)
+
+    result = agent.investigate(host.name, "ネットとSSDを確認して")
+
+    assert result.summary == "synthesized after evidence bound"
+    assert result.stop_reason == "ANSWERABLE"
+    assert remote.calls == ["inspect_network:routes"]
+    assert client.requests[-1]["tools"] == []
+    executed = _function_result_payload(client.requests[-1]["inputs"], "executed")
+    pending = _function_result_payload(client.requests[-1]["inputs"], "pending")
+    assert executed == {
+        "read_executed": True,
+        "result_retained": False,
+        "reason": "EVIDENCE_BOUND_REACHED",
+    }
+    assert pending == {"read_executed": False, "reason": "EVIDENCE_BOUND_REACHED"}
+
+
 def _user_input_for_test(text):
     return {"type": "user_input", "content": [{"type": "text", "text": text}]}
+
+
+def _function_result_payload(inputs, call_id):
+    step = next(item for item in inputs
+                if item.get("type") == "function_result" and item.get("call_id") == call_id)
+    return json.loads(step["result"][0]["text"])
 
 
 def test_unknown_and_write_tools_fail_closed_without_execution(tmp_path, host):

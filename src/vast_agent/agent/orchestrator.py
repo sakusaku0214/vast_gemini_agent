@@ -233,8 +233,12 @@ class InvestigationAgent:
                 record = compact_evidence(call.name, output, max_chars=1800)
                 if not session.add(call.name, call.arguments, record):
                     final_reason = session.stop_reason or StopReason.BOUND_REACHED
+                    self._append_executed_unretained_result(
+                        inputs, call, "EVIDENCE_BOUND_REACHED",
+                    )
                     self._append_unexecuted_results(
-                        inputs, response.function_calls[call_index:], "EVIDENCE_BOUND_REACHED",
+                        inputs, response.function_calls[call_index + 1:],
+                        "EVIDENCE_BOUND_REACHED",
                     )
                     stop_execution = True
                     break
@@ -258,6 +262,18 @@ class InvestigationAgent:
         result = self._synthesize_from_evidence(session, inputs, final_reason)
         logger.info("Investigation complete trace=%s", session.trace())
         return result
+
+    @staticmethod
+    def _append_executed_unretained_result(
+        inputs: list[dict[str, object]], call: object, reason: str,
+    ) -> None:
+        """Replay an executed READ without reintroducing its rejected raw result."""
+        inputs.append({
+            "type": "function_result", "name": call.name, "call_id": call.call_id,
+            "result": [{"type": "text", "text": json.dumps({
+                "read_executed": True, "result_retained": False, "reason": reason,
+            })}],
+        })
 
     @staticmethod
     def _append_unexecuted_results(
