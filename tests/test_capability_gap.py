@@ -40,7 +40,7 @@ def test_acquisition_intent_is_separate_from_goal(text, expected):
 
 
 def test_catalog_is_authoritative_over_model_candidate():
-    request = request_for_gap("garage-mag", gap(candidate_package="curl"))
+    request = request_for_gap("garage-mag", gap(candidate_package="curl"), consent=True)
     assert request is not None
     assert request.parameters.package_name == "vnstat"
     assert request.parameters.expected_capability == "traffic_history"
@@ -88,7 +88,9 @@ def test_historical_caveat_is_code_owned_and_rendered():
 
 
 def test_installed_software_is_full_capability_with_registered_read_tool():
-    assessed = assess_gap(gap(status="available", software_status="available"))
+    assessed = assess_gap(gap(
+        status="available", software_status="available", service_status="active",
+    ))
     assert assessed.status == "available"
     assert request_for_gap("garage-mag", assessed) is None
 
@@ -120,7 +122,7 @@ def test_software_missing_is_distinct_from_agent_read_support_missing():
         CapabilityBackendResolver(registry={}),
     )
     assert software_missing.status == "missing"
-    assert request_for_gap("garage-mag", software_missing) is not None
+    assert request_for_gap("garage-mag", software_missing, consent=True) is not None
     assert agent_read_missing.status == "unknown"
     assert request_for_gap("garage-mag", agent_read_missing) is None
 

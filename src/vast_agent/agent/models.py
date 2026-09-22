@@ -133,13 +133,26 @@ class CapabilityGap(BaseModel):
     """Validated READ conclusion; package suggestions are deliberately non-authoritative."""
 
     model_config = ConfigDict(extra="forbid")
-    capability_id: Literal["traffic_history", "network_interface_details", "nvme_health"]
-    status: Literal["available", "missing", "unknown"]
+    capability_id: str = Field(min_length=1, max_length=64)
+    status: Literal["available", "degraded", "missing", "unknown", "unsupported"]
     software_status: Literal["available", "missing", "unknown"]
+    service_status: Literal[
+        "active", "inactive", "unavailable", "unknown", "not_required",
+    ] = "unknown"
     reason: str = Field(max_length=500)
     evidence: list[str] = Field(default_factory=list, max_length=12)
     candidate_package: str | None = Field(default=None, max_length=128)
     confidence: Literal["low", "medium", "high"] = "low"
+
+    @field_validator("capability_id")
+    @classmethod
+    def registered_capability(cls, value: str) -> str:
+        # Local import avoids making the declarative catalog depend on Gemini models.
+        from vast_agent.actions.package_catalog import capability_definition
+
+        if capability_definition(value) is None:
+            raise ValueError("capability_id is not in the code-owned registry")
+        return value
 
 
 class InvestigationResult(BaseModel):

@@ -19,9 +19,9 @@ class CapabilityBackendResolver:
 
     def available(self, capability_id: str) -> bool:
         definition = capability_definition(capability_id)
-        if definition is None or not definition.agent_read_supported or not definition.read_tool_name:
+        if definition is None or definition.read_backend is None:
             return False
         assert self.registry is not None
-        backend = self.registry.get(definition.read_tool_name)
+        backend = self.registry.get(definition.read_backend.tool_name)
         return (backend is not None and getattr(backend, "available", False)
                 and getattr(backend, "risk_class", None) == "READ_ONLY")

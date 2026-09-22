@@ -9,6 +9,7 @@ from typing import Any, Final
 
 from pydantic import BaseModel
 
+from vast_agent.actions.package_catalog import CAPABILITY_REGISTRY
 from vast_agent.agent.models import (
     CollectEvidenceArgs,
     ExecutableQueryArgs,
@@ -351,5 +352,23 @@ def discover(host: Host) -> dict[str, object]:
     capabilities = []
     for item in HOST_READ_CAPABILITIES.values():
         available = item.available and all(getattr(host.capabilities, cap, False) for cap in item.required_host_capabilities)
-        capabilities.append({"name": item.name, "description": item.description, "category": item.category, "risk_class": item.risk_class, "available": available})
-    return {"host": host.name, "capabilities": capabilities}
+        capabilities.append({"name": item.name, "category": item.category,
+                             "risk_class": item.risk_class, "available": available})
+    high_level = []
+    for definition in CAPABILITY_REGISTRY.definitions:
+        backend_name = definition.read_backend.tool_name if definition.read_backend else None
+        backend = HOST_READ_CAPABILITIES.get(backend_name) if backend_name else None
+        acquisition = definition.acquisition
+        high_level.append({
+            "capability_id": definition.capability_id,
+            "backend": backend_name,
+            "backend_registered": backend is not None,
+            "acquisition": acquisition.package_name if acquisition else None,
+        })
+    return {"host": host.name, "capabilities": capabilities,
+            "high_level_capabilities": high_level}
+
+
+# Fail fast if a required declarative backend is absent or unsafe. Optional future backends may
+# be registered with required=False and will be exposed as unavailable by discovery.
+CAPABILITY_REGISTRY.validate(HOST_READ_CAPABILITIES)
