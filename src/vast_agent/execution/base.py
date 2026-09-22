@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
+from vast_agent.jobs.cancellation import CancellationToken
 from vast_agent.models.host import Host
 from vast_agent.models.tool_result import ErrorCode, ToolResult
 
 
 class Executor(Protocol):
-    def execute(self, host: Host, command: Sequence[str], timeout: int) -> ToolResult: ...
+    def execute(self, host: Host, command: Sequence[str], timeout: int,
+                cancellation: CancellationToken | None = None) -> ToolResult: ...
 
 
 class FakeExecutor:
@@ -18,8 +20,9 @@ class FakeExecutor:
         self.results = results
         self.calls: list[str] = []
 
-    def execute(self, host: Host, command: Sequence[str], timeout: int) -> ToolResult:
-        del host, command, timeout
+    def execute(self, host: Host, command: Sequence[str], timeout: int,
+                cancellation: CancellationToken | None = None) -> ToolResult:
+        del host, command, timeout, cancellation
         return ToolResult(
             success=False, exit_code=127, stderr="FakeExecutor requires a tool name", duration_ms=0,
             error_code=ErrorCode.COMMAND_FAILED,

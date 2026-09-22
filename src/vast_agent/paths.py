@@ -36,6 +36,10 @@ class RuntimePaths:
     def incident_logs(self) -> Path: return self.root / "logs" / "incidents"
     @property
     def observation_logs(self) -> Path: return self.root / "logs" / "observations"
+    @property
+    def agent_logs(self) -> Path: return self.root / "logs" / "agent"
+    @property
+    def process_state(self) -> Path: return self.root / "state" / "agent.json"
 
     def create(self) -> None:
         for part in (

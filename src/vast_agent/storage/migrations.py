@@ -34,4 +34,18 @@ MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX token_usage_created_at ON token_usage(created_at);
     """,
+    """
+    CREATE TABLE jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, host TEXT,
+      status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT,
+      finished_at TEXT, request_summary TEXT NOT NULL, result_summary TEXT,
+      error_code TEXT
+    );
+    CREATE INDEX jobs_created_at ON jobs(created_at);
+    CREATE TABLE conversation_state (
+      owner_id TEXT NOT NULL, channel_id TEXT NOT NULL, last_host TEXT,
+      last_job_id INTEGER, last_scope TEXT, updated_at TEXT NOT NULL,
+      PRIMARY KEY(owner_id, channel_id)
+    );
+    """,
 )

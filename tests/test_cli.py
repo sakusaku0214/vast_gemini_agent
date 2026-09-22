@@ -10,9 +10,9 @@ def test_cli_install_doctor_hosts(tmp_path, capsys):
     assert "Runtime initialized" in capsys.readouterr().out
 
 
-def test_future_command_is_explicitly_unimplemented(tmp_path, capsys):
+def test_remaining_future_command_is_explicitly_unimplemented(tmp_path, capsys):
     assert main(["--runtime", str(tmp_path), "install"]) == 0
-    assert main(["--runtime", str(tmp_path), "restart"]) == 3
+    assert main(["--runtime", str(tmp_path), "backup"]) == 3
     assert "not implemented" in capsys.readouterr().err
 
 
@@ -69,3 +69,12 @@ def test_gemini_check_uses_stateless_text_input(tmp_path, capsys, monkeypatch):
     assert captured["inputs"] == [{"type": "text", "text": "Reply OK."}]
     assert captured["store"] is False
     assert "Interactions API OK" in capsys.readouterr().out
+
+
+def test_start_respects_discord_disabled(tmp_path, capsys):
+    assert main(["--runtime", str(tmp_path), "install"]) == 0
+    (tmp_path / "config" / "agent.yaml").write_text(
+        "discord:\n  enabled: false\n", encoding="utf-8",
+    )
+    assert main(["--runtime", str(tmp_path), "start"]) == 2
+    assert "disabled" in capsys.readouterr().err

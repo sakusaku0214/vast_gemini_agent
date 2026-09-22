@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from vast_agent.execution.base import Executor
+from vast_agent.jobs.cancellation import CancellationToken, current_cancellation
 from vast_agent.models.host import Host
 from vast_agent.models.tool_result import ErrorCode, ToolResult
 
@@ -37,7 +38,9 @@ TOOLS: Final[dict[str, ToolMetadata]] = {
 }
 
 
-def run_tool(name: str, host: Host, executor: Executor) -> ToolResult:
+def run_tool(name: str, host: Host, executor: Executor,
+             cancellation: CancellationToken | None = None) -> ToolResult:
+    cancellation = cancellation or current_cancellation.get()
     metadata = TOOLS.get(name)
     if metadata is None:
         return ToolResult(success=False, duration_ms=0, error_code=ErrorCode.TOOL_UNSUPPORTED)
@@ -50,4 +53,4 @@ def run_tool(name: str, host: Host, executor: Executor) -> ToolResult:
     execute_tool = getattr(executor, "execute_tool", None)
     if execute_tool is not None:
         return execute_tool(name, host, metadata.command, metadata.timeout)
-    return executor.execute(host, metadata.command, metadata.timeout)
+    return executor.execute(host, metadata.command, metadata.timeout, cancellation)

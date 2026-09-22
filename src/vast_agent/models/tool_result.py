@@ -13,6 +13,7 @@ class ErrorCode(StrEnum):
     CONFIG_INVALID = "CONFIG_INVALID"
     HOST_NOT_FOUND = "HOST_NOT_FOUND"
     TOOL_UNSUPPORTED = "TOOL_UNSUPPORTED"
+    CANCELLED = "CANCELLED"
 
 
 class ToolResult(BaseModel):

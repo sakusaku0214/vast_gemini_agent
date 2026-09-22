@@ -7,6 +7,7 @@ from pathlib import Path
 
 from vast_agent.execution.base import Executor, redact
 from vast_agent.inspector import FULL, GROUPS
+from vast_agent.jobs.cancellation import CancellationToken
 from vast_agent.models.host import Host
 from vast_agent.models.observation import Observation
 from vast_agent.models.tool_result import ToolResult
@@ -46,19 +47,20 @@ class InspectionService:
 
     def inspect_and_record(
         self, host: Host, executor: Executor, group: str | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> InspectionRecord:
         from vast_agent.diagnostics.parser import build_observation
 
         self.database.migrate()
         self.database.upsert_host(host)
         names = GROUPS[group] if group else FULL
-        ping = run_tool("host_ping", host, executor)
+        ping = run_tool("host_ping", host, executor, cancellation)
         results = {"host_ping": ping}
         if ping.success:
             results.update({
-                name: run_tool(name, host, executor)
+                name: run_tool(name, host, executor, cancellation)
                 for name in names
-                if name != "host_ping"
+                if name != "host_ping" and not (cancellation and cancellation.cancelled)
             })
         observation = self._redact_observation(build_observation(host.name, results))
         log_paths = {
