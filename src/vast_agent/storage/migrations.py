@@ -25,4 +25,13 @@ MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX incidents_host_signature ON incidents(host, primary_signature);
     """,
+    """
+    CREATE TABLE token_usage (
+      id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, purpose TEXT NOT NULL,
+      model TEXT NOT NULL, thinking_level TEXT NOT NULL,
+      input_tokens INTEGER, output_tokens INTEGER, thought_tokens INTEGER,
+      cached_tokens INTEGER, tool_use_tokens INTEGER, total_tokens INTEGER
+    );
+    CREATE INDEX token_usage_created_at ON token_usage(created_at);
+    """,
 )
