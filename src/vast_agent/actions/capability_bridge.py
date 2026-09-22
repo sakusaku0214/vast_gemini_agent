@@ -3,6 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 
 from vast_agent.actions.capability_backends import CapabilityBackendResolver
+from vast_agent.actions.capability_state import SoftwareAvailabilityChecker
 from vast_agent.actions.models import ActionRequest, ActionType, PackageInstallParameters
 from vast_agent.actions.package_catalog import capability_definition
 from vast_agent.agent.models import CapabilityGap
@@ -30,8 +31,10 @@ def acquisition_intent(text: str) -> AcquisitionIntent:
     return AcquisitionIntent.READ_ONLY
 
 
-def request_for_gap(host: str, gap: CapabilityGap) -> ActionRequest | None:
+def request_for_gap(host: str, gap: CapabilityGap, *, consent: bool = False) -> ActionRequest | None:
     """Bridge only confirmed, sufficiently confident catalog capabilities to typed writes."""
+    if not consent:
+        return None
     definition = capability_definition(gap.capability_id)
     if (definition is None or definition.acquisition is None
             or not definition.acquisition.install_supported):
@@ -52,18 +55,21 @@ def request_for_gap(host: str, gap: CapabilityGap) -> ActionRequest | None:
 
 
 def assess_gap(gap: CapabilityGap, resolver: CapabilityBackendResolver | None = None) -> CapabilityGap:
-    """Apply code-owned execution support to the model's host-software observation.
+    """Apply the authoritative capability state machine to model READ observations.
 
     ``available`` means the registered agent can achieve the goal, not merely that a package
-    exists. Model text and its proposed aggregate status never override catalog metadata.
+    exists. Service requirements and backend safety come from code-owned metadata; the model's
+    proposed aggregate status and candidate package never override them.
     """
     definition = capability_definition(gap.capability_id)
-    if definition is None or gap.software_status == "unknown":
+    if definition is None:
         return gap.model_copy(update={"status": "unknown"})
-    if gap.software_status == "missing":
-        return gap.model_copy(update={"status": "missing"})
-    if (resolver or CapabilityBackendResolver()).available(gap.capability_id):
-        return gap.model_copy(update={"status": "available"})
-    reason = gap.reason.rstrip(". ")
-    reason += "; host software exists but a matching registered Agent READ backend is unavailable"
-    return gap.model_copy(update={"status": "unknown", "reason": reason})
+    checker = SoftwareAvailabilityChecker(resolver or CapabilityBackendResolver())
+    state = checker.assess_status(
+        gap.capability_id, gap.software_status, gap.service_status,
+        evidence=tuple(gap.evidence),
+    )
+    reason = gap.reason
+    if state.overall_status.value != "available" and state.reason not in reason:
+        reason = f"{reason.rstrip('. ')}; {state.reason}"
+    return gap.model_copy(update={"status": state.overall_status.value, "reason": reason})

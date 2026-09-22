@@ -1,6 +1,7 @@
 import pytest
 
 from vast_agent.actions.capability_backends import CapabilityBackendResolver
+from vast_agent.actions.capability_bridge import assess_gap, request_for_gap
 from vast_agent.actions.capability_state import (
     OverallStatus,
     ServiceStatus,
@@ -15,7 +16,9 @@ from vast_agent.actions.package_catalog import (
     ReadBackendDefinition,
 )
 from vast_agent.agent.host_read import HOST_READ_CAPABILITIES
+from vast_agent.agent.models import CapabilityGap, InvestigationResult
 from vast_agent.agent.prompts import SYSTEM_PROMPT, capability_prompt_block
+from vast_agent.services.agent_service import AgentService
 
 
 def test_existing_capabilities_are_declarative_and_resolve_backends():
@@ -68,6 +71,42 @@ def test_state_distinguishes_inactive_service_and_no_service_requirement():
     )
     assert network.overall_status is OverallStatus.AVAILABLE
     assert network.service_status is ServiceStatus.NOT_REQUIRED
+
+
+def traffic_gap(service_status: str, software_status: str = "available") -> CapabilityGap:
+    return CapabilityGap(
+        capability_id="traffic_history", status="available",
+        software_status=software_status, service_status=service_status,
+        reason=f"vnstat service is {service_status}", confidence="high",
+    )
+
+
+def test_inactive_service_flows_through_gap_without_install_proposal():
+    gap = assess_gap(traffic_gap("inactive"))
+    assert gap.status == "degraded"
+    assert request_for_gap("host", gap) is None
+
+
+def test_active_missing_and_unknown_service_production_semantics():
+    assert assess_gap(traffic_gap("active")).status == "available"
+    missing = assess_gap(traffic_gap("unknown", "missing"))
+    assert missing.status == "missing"
+    assert request_for_gap("host", missing) is None
+    assert request_for_gap("host", missing, consent=True) is not None
+    unknown = assess_gap(traffic_gap("unknown"))
+    assert unknown.status == "unknown"
+    assert request_for_gap("host", unknown) is None
+
+
+def test_renderer_identifies_degraded_as_no_automatic_acquisition():
+    result = InvestigationResult(
+        summary="history unavailable", confidence="high", recommended_action="NONE",
+        capability_gaps=[traffic_gap("inactive")],
+    )
+    rendered = AgentService._format_investigation("host", result)
+    assert "一部利用不可" in rendered
+    assert "自動導入対象: なし (package already installed)" in rendered
+    assert "Catalog候補" not in rendered
 
 
 def test_backend_unavailable_never_becomes_available():

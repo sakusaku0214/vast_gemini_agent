@@ -291,6 +291,7 @@ def test_capability_availability_cross_checks_real_registry():
     mismatch = CapabilityBackendResolver(registry={"different_name": object()})
     for capability in ("traffic_history", "nvme_health", "network_interface_details"):
         gap = CapabilityGap(capability_id=capability, status="unknown", software_status="available",
+            service_status="active" if capability == "traffic_history" else "not_required",
             reason="software found", confidence="high")
         assert assess_gap(gap, available).status == "available"
         assert assess_gap(gap, absent).status == "unknown"

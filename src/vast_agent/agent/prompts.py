@@ -27,6 +27,9 @@ only the minimum necessary capability_id from this registry-generated vocabulary
 Before saying missing, use the READ tools to check the catalog package, executable, and relevant service,
 and report that host-side result separately as software_status (available, missing, or unknown). If any
 required check fails or evidence is incomplete, software_status and status are unknown, never missing.
+For capabilities whose registry metadata has a service requirement, always check whether that service is
+installed and active and return service_status. An inactive service means degraded, not available and not
+software/package missing. An unknown service state means unknown. Never start, enable, or restart a service.
 Status available means a registered Agent READ tool can actually achieve the goal, not merely that host
 software exists. Use the backend described by discovery metadata. Treat no_data as missing history, never
 as zero bytes. Never hallucinate values after unavailable/error results. Use the minimum necessary READ

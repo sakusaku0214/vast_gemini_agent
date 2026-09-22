@@ -211,7 +211,7 @@ class AgentService:
         if (investigation_result is not None
                 and acquisition_intent(text) == AcquisitionIntent.PROPOSE_IF_NEEDED):
             requests = [
-                request_for_gap(host.name, gap)
+                request_for_gap(host.name, gap, consent=True)
                 for gap in getattr(investigation_result, "capability_gaps", [])
             ]
             requests = [request for request in requests if request is not None]
@@ -428,7 +428,10 @@ class AgentService:
             if definition is None:
                 continue
             evidence = "\n".join(f"- {item}" for item in gap.evidence) or "- 確認情報なし"
-            state = {"available": "利用可能", "missing": "不足", "unknown": "確認不能"}[gap.status]
+            state = {
+                "available": "利用可能", "degraded": "一部利用不可", "missing": "不足",
+                "unknown": "確認不能", "unsupported": "非対応",
+            }[gap.status]
             note = ""
             if gap.status == "missing" and definition.acquisition is not None:
                 if definition.acquisition.install_supported:
@@ -439,6 +442,8 @@ class AgentService:
                     note += f"\n{definition.post_install_notes}"
             elif gap.status == "missing":
                 note = "\n自動導入対象なし"
+            elif gap.status == "degraded":
+                note = "\n自動導入対象: なし (package already installed)"
             gaps.append(
                 f"能力: {gap.capability_id} ({state})\n理由: {gap.reason}\n確認:\n{evidence}{note}"
             )

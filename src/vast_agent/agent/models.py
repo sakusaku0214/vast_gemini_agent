@@ -134,8 +134,11 @@ class CapabilityGap(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     capability_id: str = Field(min_length=1, max_length=64)
-    status: Literal["available", "missing", "unknown"]
+    status: Literal["available", "degraded", "missing", "unknown", "unsupported"]
     software_status: Literal["available", "missing", "unknown"]
+    service_status: Literal[
+        "active", "inactive", "unavailable", "unknown", "not_required",
+    ] = "unknown"
     reason: str = Field(max_length=500)
     evidence: list[str] = Field(default_factory=list, max_length=12)
     candidate_package: str | None = Field(default=None, max_length=128)

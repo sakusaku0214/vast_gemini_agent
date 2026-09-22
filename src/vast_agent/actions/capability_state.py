@@ -22,6 +22,7 @@ class ServiceStatus(StrEnum):
     ACTIVE = "active"
     INACTIVE = "inactive"
     UNAVAILABLE = "unavailable"
+    UNKNOWN = "unknown"
     NOT_REQUIRED = "not_required"
 
 
@@ -51,6 +52,21 @@ class SoftwareAvailabilityChecker:
 
     resolver: CapabilityBackendResolver = CapabilityBackendResolver()
 
+    def assess_status(
+        self,
+        capability_id: str,
+        software_status: SoftwareStatus | str,
+        service_status: ServiceStatus | str | None,
+        *,
+        host_capabilities: dict[str, bool] | None = None,
+        evidence: tuple[str, ...] = (),
+    ) -> CapabilityState:
+        """Evaluate already-normalized READ results through the same state machine."""
+        return capability_state(
+            capability_id, software_status, service_status,
+            host_capabilities=host_capabilities, evidence=evidence, resolver=self.resolver,
+        )
+
     def assess(
         self,
         capability_id: str,
@@ -76,14 +92,19 @@ class SoftwareAvailabilityChecker:
         requirement = acquisition.service_requirement if acquisition else ServiceRequirement.NONE
         if requirement is ServiceRequirement.NONE:
             service = ServiceStatus.NOT_REQUIRED
-        elif service_installed is not True:
+        elif service_installed is None:
+            service = ServiceStatus.UNKNOWN
+        elif service_installed is False:
             service = ServiceStatus.UNAVAILABLE
-        elif service_active:
+        elif service_active is True:
             service = ServiceStatus.ACTIVE
-        else:
+        elif service_active is False:
             service = ServiceStatus.INACTIVE
-        return capability_state(capability_id, software, service,
-                                host_capabilities=host_capabilities, resolver=self.resolver)
+        else:
+            service = ServiceStatus.UNKNOWN
+        return self.assess_status(
+            capability_id, software, service, host_capabilities=host_capabilities,
+        )
 
 
 def capability_state(
@@ -118,8 +139,12 @@ def capability_state(
         overall, reason = OverallStatus.MISSING, "software prerequisite is missing"
     elif software is SoftwareStatus.UNKNOWN or backend is BackendStatus.UNAVAILABLE:
         overall, reason = OverallStatus.UNKNOWN, "software or READ backend availability is unknown"
-    elif requirement is ServiceRequirement.ACTIVE and service is not ServiceStatus.ACTIVE:
+    elif service is ServiceStatus.UNKNOWN:
+        overall, reason = OverallStatus.UNKNOWN, "required service state is unknown"
+    elif requirement is ServiceRequirement.ACTIVE and service is ServiceStatus.INACTIVE:
         overall, reason = OverallStatus.DEGRADED, "required history collection service is not active"
+    elif requirement is ServiceRequirement.ACTIVE and service is ServiceStatus.UNAVAILABLE:
+        overall, reason = OverallStatus.DEGRADED, "required history collection service is unavailable"
     elif requirement is ServiceRequirement.INSTALLED and service is ServiceStatus.UNAVAILABLE:
         overall, reason = OverallStatus.DEGRADED, "required service is unavailable"
     else:
