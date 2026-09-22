@@ -94,12 +94,26 @@ def test_docker_healthy_zero_and_warning_states_are_bounded(host):
     assert value["status"] == "warning"
     assert value["restarting_containers"] == value["dead_containers"] == 1
     assert len(value["containers"]) == 16 and value["containers"][0]["health"] == "healthy"
+    assert "DOCKER_FAILED" not in value["signatures"]
+
+
+@pytest.mark.parametrize("listing", [
+    "loop|Restarting (1) 3 seconds ago|restarting\n",
+    "dead-one|Dead|dead\n",
+    "sick|Up 1 minute (unhealthy)|running\n",
+])
+def test_active_service_container_warning_does_not_mean_docker_failed(host, listing):
+    value, _ = docker(host, listing=listing)
+    assert value["status"] == "warning"
+    assert "DOCKER_FAILED" not in value["signatures"]
+    assert value["evidence"]
 
 
 @pytest.mark.parametrize("service", ["inactive", "failed"])
 def test_docker_inactive_preserves_known_service_evidence(host, service):
     value, remote = docker(host, service=service)
     assert value["status"] == "unavailable" and value["service_state"] == service
+    assert value["signatures"] == ["DOCKER_FAILED"]
     assert remote.calls == ["query_docker_diagnostics:service"]
 
 

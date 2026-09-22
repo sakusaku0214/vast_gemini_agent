@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from vast_agent.actions.preflight import docker_workload_summary
 from vast_agent.diagnostics.parser import build_observation
+from vast_agent.diagnostics.signatures import KnownSignature
 from vast_agent.execution.base import Executor
 from vast_agent.models.host import Host
 from vast_agent.models.observation import GpuDevice
@@ -168,6 +169,8 @@ def docker_diagnostics(host: Host, executor: Executor) -> DockerDiagnosticResult
     if service_state != "active":
         status: DiagnosticStatus = "unavailable" if service_state in {"inactive", "failed"} else "degraded"
         return DockerDiagnosticResult(status=status, service_state=service_state,
+            signatures=([KnownSignature.DOCKER_FAILED.value]
+                        if service_state in {"inactive", "failed"} else []),
             evidence=[f"docker service state is {service_state}"])
     listing = _execute(executor, host, "query_docker_diagnostics:containers",
         ("docker", "ps", "-a", "--format", "{{.Names}}|{{.Status}}|{{.State}}"))
@@ -189,6 +192,18 @@ def docker_diagnostics(host: Host, executor: Executor) -> DockerDiagnosticResult
     unknown = counts["unknown"] + malformed
     warning = bool(counts["restarting"] or counts["dead"] or unknown or
                    any(item.health == "unhealthy" for item in containers))
+    evidence = []
+    if counts["restarting"]:
+        evidence.append(f"{counts['restarting']} container(s) are restarting")
+    if counts["dead"]:
+        evidence.append(f"{counts['dead']} container(s) are dead")
+    if unknown:
+        evidence.append(f"{unknown} container row(s) have unknown state")
+    unhealthy = sum(item.health == "unhealthy" for item in containers)
+    if unhealthy:
+        evidence.append(f"{unhealthy} container(s) report unhealthy")
+    if len(containers) > MAX_CONTAINERS:
+        evidence.append(f"container details limited to {MAX_CONTAINERS}")
     return DockerDiagnosticResult(
         status="warning" if warning else "healthy", service_state=service_state,
         total_containers=len(lines), running_containers=counts["running"],
@@ -196,8 +211,8 @@ def docker_diagnostics(host: Host, executor: Executor) -> DockerDiagnosticResult
         created_containers=counts["created"], dead_containers=counts["dead"],
         unknown_containers=max(unknown, workload.unknown_containers),
         containers=containers[:MAX_CONTAINERS],
-        signatures=["DOCKER_FAILED"] if warning else [],
-        evidence=[f"container details limited to {MAX_CONTAINERS}"] if len(containers) > MAX_CONTAINERS else [],
+        signatures=[],
+        evidence=evidence,
     )
 
 
