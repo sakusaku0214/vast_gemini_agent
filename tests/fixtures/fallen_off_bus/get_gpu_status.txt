@@ -1,0 +1,1 @@
+0, GPU-example, NVIDIA RTX Example, 42, 10, 1024, 24576, P8, 00000000:01:00.0
