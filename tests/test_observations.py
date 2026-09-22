@@ -164,6 +164,43 @@ def test_unsupported_services_do_not_produce_failure_signatures():
     assert "DOCKER_FAILED" not in observation.signatures
 
 
+def test_missing_services_from_general_status_do_not_produce_failure_signatures():
+    service_status = ToolResult(
+        success=True,
+        stdout=(
+            "Id=vastai.service\nLoadState=not-found\nActiveState=inactive\n"
+            "Id=docker.service\nLoadState=not-found\nActiveState=inactive\n"
+        ),
+        duration_ms=1,
+    )
+    observation = build_observation("test-host", {
+        "host_ping": ToolResult(success=True, duration_ms=1),
+        "get_service_status": service_status,
+    })
+    assert "vastai" not in observation.services
+    assert "docker" not in observation.services
+    assert "VAST_OFFLINE" not in observation.signatures
+    assert "DOCKER_FAILED" not in observation.signatures
+
+
+@pytest.mark.parametrize(("service", "state", "signature"), [
+    ("docker", "failed", "DOCKER_FAILED"),
+    ("vastai", "inactive", "VAST_OFFLINE"),
+])
+def test_existing_failed_service_from_general_status_produces_signature(
+    service, state, signature,
+):
+    observation = build_observation("test-host", {
+        "host_ping": ToolResult(success=True, duration_ms=1),
+        "get_service_status": ToolResult(
+            success=True,
+            stdout=(f"Id={service}.service\nLoadState=loaded\nActiveState={state}\n"),
+            duration_ms=1,
+        ),
+    })
+    assert signature in observation.signatures
+
+
 def test_garage_torrent_lspci_grep_output_handles_separator_and_vendors():
     from pathlib import Path
 

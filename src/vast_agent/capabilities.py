@@ -11,20 +11,36 @@ from vast_agent.execution.base import Executor
 from vast_agent.models.host import Capabilities, Host
 
 # Every probe is a code-owned, read-only argv. No caller-controlled command is accepted.
-CAPABILITY_PROBES: dict[str, tuple[str, ...]] = {
-    "nvidia": ("sh", "-c", "command -v nvidia-smi >/dev/null 2>&1"),
-    "docker": ("sh", "-c", "command -v docker >/dev/null 2>&1 || systemctl show docker.service >/dev/null 2>&1"),
-    "libvirt": ("sh", "-c", "command -v virsh >/dev/null 2>&1 || systemctl show libvirtd.service >/dev/null 2>&1"),
-    "vast": ("sh", "-c", "systemctl show vastai.service >/dev/null 2>&1 || test -e /var/lib/vastai_kaalia"),
+COMMAND_PROBES: dict[str, tuple[str, ...]] = {
+    "nvidia": ("command", "-v", "nvidia-smi"),
+    "docker": ("command", "-v", "docker"),
+    "libvirt": ("command", "-v", "virsh"),
 }
+SERVICE_PROBES: dict[str, tuple[str, ...]] = {
+    name: ("systemctl", "show", f"{name}.service", "--property=LoadState", "--value")
+    for name in ("docker", "libvirtd", "vastai")
+}
+VAST_INSTALL_PROBE = ("test", "-e", "/var/lib/vastai_kaalia")
 
 
 def detect_capabilities(host: Host, executor: Executor) -> Capabilities:
-    values = {
+    command_exists = {
         name: executor.execute(host, command, 15).success
-        for name, command in CAPABILITY_PROBES.items()
+        for name, command in COMMAND_PROBES.items()
     }
-    return Capabilities.model_validate(values)
+    return Capabilities(
+        nvidia=command_exists["nvidia"],
+        docker=command_exists["docker"] or _service_exists(host, executor, "docker"),
+        libvirt=command_exists["libvirt"] or _service_exists(host, executor, "libvirtd"),
+        vast=_service_exists(host, executor, "vastai")
+        or executor.execute(host, VAST_INSTALL_PROBE, 15).success,
+    )
+
+
+def _service_exists(host: Host, executor: Executor, service: str) -> bool:
+    result = executor.execute(host, SERVICE_PROBES[service], 15)
+    load_state = result.stdout.strip().casefold().removeprefix("loadstate=").strip()
+    return result.success and load_state not in {"", "not-found", "empty", "error"}
 
 
 def apply_capabilities(path: Path, host_name: str, capabilities: Capabilities) -> None:

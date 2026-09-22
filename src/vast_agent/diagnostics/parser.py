@@ -105,14 +105,25 @@ def parse_pci(text: str) -> dict[str, object]:
 
 
 def parse_service_show(text: str) -> dict[str, str]:
-    services: dict[str, str] = {}
-    current = "vastai"
+    units: list[dict[str, str]] = []
+    current: dict[str, str] = {"Id": "vastai.service"}
     for line in text.splitlines():
         if line.startswith("Id="):
-            current = line[3:].removesuffix(".service")
-        elif line.startswith("ActiveState="):
-            services[current] = line.split("=", 1)[1]
-    return services
+            if len(current) > 1:
+                units.append(current)
+            current = {"Id": line[3:]}
+        elif "=" in line:
+            key, value = line.split("=", 1)
+            current[key] = value
+    if len(current) > 1:
+        units.append(current)
+    unavailable = {"not-found", "empty", "error"}
+    return {
+        unit["Id"].removesuffix(".service"): unit["ActiveState"]
+        for unit in units
+        if unit.get("LoadState", "loaded").casefold() not in unavailable
+        and "ActiveState" in unit
+    }
 
 
 def build_observation(host: str, results: dict[str, ToolResult]) -> Observation:
