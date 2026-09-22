@@ -9,6 +9,10 @@ goal is answerable or a tool, round, evidence, or time bound is reached. The app
 every typed argument and fixes the target host; the planner has no shell, arbitrary executable,
 package-install, restart, reset, reboot, or other mutation function.
 
+READ budget exhaustion does not discard evidence already gathered: when possible, the final
+reserved Gemini call synthesizes that evidence with no tools available. Narrow questions should
+stop as soon as the smallest relevant evidence set makes a full or explicitly partial answer possible.
+
 A new high-level capability is appropriate only when dedicated backend semantics are required,
 state or acquisition semantics are special, or safe composition of existing READ tools is
 insufficient. Tool failure is `EVIDENCE_MISSING`, a registered backend unavailable in context is
