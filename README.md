@@ -14,6 +14,7 @@ setup.cmd
 
 セットアップはリポジトリ内 `.venv` を作り、実データは
 `%LOCALAPPDATA%\VastGeminiAgent` に作成します。再実行しても既存設定は上書きしません。
+Windowsユーザープロファイル名と専用known_hostsのパスに空白が含まれていても利用できます。
 
 `config/examples/hosts.example.yaml` を参考に runtime の `config/hosts.yaml` を編集してください。
 example host は予約された文書用IPであり、初期runtimeにはコピーされません。
@@ -72,7 +73,8 @@ Cancel Buttonは現Phaseではgatewayへ接続しておらず、cancelは上記�
 ```
 
 `trust-host` は `ssh-keyscan` の候補fingerprintを表示し、利用者が別経路で照合して `YES` と
-明示するまで専用known_hostsへ書きません。鍵変更は自動承認しません。
+明示するまで専用known_hostsへ書きません。Windows標準`ssh-keyscan`のKEX互換問題時は、認証を
+無効にした`ssh`と一時known_hostsで候補鍵だけを安全に取得します。鍵変更は自動承認しません。
 
 `migrate-v1` は対象ファイルを実行せず、ASTのliteral `MACHINES` だけを読みます。同名hostは
 上書きせず、tokenや環境変数を取り込みません。
