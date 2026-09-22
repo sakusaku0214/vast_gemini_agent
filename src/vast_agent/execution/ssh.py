@@ -4,6 +4,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Sequence
+from os import PathLike
 from pathlib import Path
 
 from vast_agent.execution.base import redact
@@ -89,7 +90,7 @@ def _decode(value: bytes | str | None) -> str:
     return value if isinstance(value, str) else value.decode("utf-8", errors="replace")
 
 
-def openssh_path(path: Path, *, windows: bool | None = None) -> str:
+def openssh_path(path: str | PathLike[str], *, windows: bool | None = None) -> str:
     """Render one path as a safe value for an OpenSSH ``-o`` argument."""
     value = str(path)
     if any(character in value for character in ('"', "\r", "\n", "\x00")):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import Mock
 
 import pytest
@@ -39,10 +39,10 @@ def test_openssh_path_rejects_option_injection(value):
 
 
 def test_posix_known_hosts_path_remains_compatible():
-    assert openssh_path(Path("/home/agent/.ssh/known_hosts"), windows=False) == (
+    assert openssh_path(PurePosixPath("/home/agent/.ssh/known_hosts"), windows=False) == (
         "/home/agent/.ssh/known_hosts"
     )
-    assert openssh_path(Path("/home/space user/known_hosts"), windows=False) == (
+    assert openssh_path(PurePosixPath("/home/space user/known_hosts"), windows=False) == (
         '"/home/space user/known_hosts"'
     )
 
