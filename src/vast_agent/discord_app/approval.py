@@ -4,6 +4,8 @@ import asyncio
 
 import discord
 
+from vast_agent.discord_app.approval_logic import handle_approval
+
 
 class ApprovalView(discord.ui.View):
     """Thin UI: custom IDs carry only the DB proposal ID."""
@@ -20,16 +22,7 @@ class ApprovalView(discord.ui.View):
         self.add_item(approve); self.add_item(reject)
 
     async def _approve(self, interaction: discord.Interaction) -> None:
-        channel_id = interaction.channel_id or 0
-        ok, message = await asyncio.to_thread(
-            self.coordinator.approve, self.proposal_id, user_id=interaction.user.id,
-            channel_id=channel_id, is_bot=interaction.user.bot,
-        )
-        if message == "NOT_AUTHORIZED":
-            await interaction.response.send_message("OWNERのみ承認できます。", ephemeral=True)
-            return
-        self._disable()
-        await interaction.response.edit_message(content=message, view=self)
+        await handle_approval(interaction, self.coordinator, self.proposal_id, self._disable)
 
     async def _reject(self, interaction: discord.Interaction) -> None:
         channel_id = interaction.channel_id or 0

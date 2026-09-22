@@ -7,6 +7,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
+from vast_agent.actions.models import PreflightSnapshot
 from vast_agent.models.host import Host
 from vast_agent.models.tool_result import ToolResult
 
@@ -28,7 +29,7 @@ class RebootTrace(BaseModel):
 class RebootRemote(Protocol):
     def dispatch(self, host: Host) -> ToolResult: ...
     def reachable(self, host: Host) -> bool: ...
-    def postcheck(self, host: Host) -> bool: ...
+    def postcheck(self, host: Host) -> PreflightSnapshot: ...
 
 
 class RebootCoordinator:
@@ -40,7 +41,8 @@ class RebootCoordinator:
         self.remote, self.timeout, self.poll_seconds = remote, timeout, poll_seconds
         self.clock, self.sleep = clock, sleep
 
-    def execute_approved(self, host: Host) -> RebootTrace:
+    def execute_approved(self, host: Host,
+                         before: PreflightSnapshot | None = None) -> RebootTrace:
         states = ["COMMAND_DISPATCHED"]
         # Disconnect/non-zero after dispatch is not enough to conclude that dispatch failed.
         dispatch = self.remote.dispatch(host)  # exactly once; point of no return
@@ -55,7 +57,8 @@ class RebootCoordinator:
                 down = True; states.append("DOWN_OBSERVED")
             elif reachable and down:
                 states.extend(("UP_OBSERVED", "VERIFYING"))
-                clean = self.remote.postcheck(host)
+                after = self.remote.postcheck(host)
+                clean = self._recovered(before, after)
                 if clean:
                     states.append("POSTCHECK_OK")
                     return RebootTrace(result=RebootResult.SUCCEEDED, states=states,
@@ -69,6 +72,29 @@ class RebootCoordinator:
         return RebootTrace(result=RebootResult.REBOOT_RECOVERY_FAILED, states=states,
                            summary="SSH did not recover; physical handling may be required; "
                                    "automated power recovery was not attempted")
+
+    @staticmethod
+    def _recovered(before: PreflightSnapshot | None,
+                   after: PreflightSnapshot | bool) -> bool:
+        # bool compatibility is retained only for isolated fake state-machine tests.
+        if isinstance(after, bool):
+            return after
+        if not after.evidence_complete or not after.ssh_reachable or after.d_state:
+            return False
+        if after.failed_units is None or (before and before.failed_units is not None and
+                                          after.failed_units > before.failed_units):
+            return False
+        if after.vast_state not in {None, "active"}:
+            return False
+        major = {"NVIDIA_FALLEN_OFF_BUS", "NVIDIA_UVM_FATAL", "GPU_STUCK_D3",
+                 "GPU_UNBOUND", "NVML_UNAVAILABLE"}
+        before_faults = major.intersection(before.signatures) if before else set()
+        if major.intersection(after.signatures):
+            return False
+        return not before_faults or bool(
+            after.nvml_ok and after.gpu_present and
+            after.pci_nvidia > 0 and after.pci_unbound == 0
+        )
 
     @staticmethod
     def _definitely_not_dispatched(result: ToolResult) -> bool:
@@ -97,5 +123,5 @@ class SSHRebootRemote:
     def reachable(self, host: Host) -> bool:
         return self._reachable(host)
 
-    def postcheck(self, host: Host) -> bool:
+    def postcheck(self, host: Host) -> PreflightSnapshot:
         return self._postcheck(host)

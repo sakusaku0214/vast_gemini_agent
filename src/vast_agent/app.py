@@ -158,7 +158,7 @@ def _service(paths: RuntimePaths, registry, executor, owner_id: int | None = Non
                     host=host.name, action_type=ActionType.HOST_REBOOT,
                     parameters=RebootParameters(assessment="HOST_REBOOT_CANDIDATE"),
                 ),
-            ).evidence_complete,
+            ),
         )
         actions = ActionCoordinator(
             database, registry, operations, preflight, TypedActionExecutor(executor, operations),

@@ -37,8 +37,12 @@ class ProductionActionVerifier:
             return VerificationResult(success=ok, status="RECOVERED" if ok else "FAILED",
                                       summary=f"GPU{params.gpu_index}: binding={state.gpu_binding}")
         if isinstance(params, VMParameters):
-            ok = state.target_exists and ((params.mode == "on" and state.gpu_binding == "vfio") or
-                                          (params.mode == "off" and not state.running_vm and state.gpu_binding in {"nvidia", None}))
+            ownership_known = state.gpu_mapping_resolved and state.pci_unbound == 0
+            ok = state.target_exists and ownership_known and (
+                (params.mode == "on" and state.gpu_binding == "vfio" and state.pci_nvidia == 0) or
+                (params.mode == "off" and not state.running_vm and
+                 state.gpu_binding == "nvidia" and state.pci_vfio == 0)
+            )
             return VerificationResult(success=ok, status="VERIFIED" if ok else "FAILED",
                                       summary=f"VM mode {params.mode}: vm_running={state.running_vm}")
         if request.action_type == ActionType.HOST_REBOOT:

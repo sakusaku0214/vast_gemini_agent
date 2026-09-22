@@ -17,6 +17,15 @@ from vast_agent.models.host import Host
 from vast_agent.services.inspection import InspectionService
 
 
+def normalize_pci_bdf(value: str | None) -> str | None:
+    """Normalize domain-width variants to the stable bus:device.function suffix."""
+    if not value:
+        return None
+    match = re.search(r"(?:[0-9a-f]{4,8}:)?([0-9a-f]{2}:[0-9a-f]{2}\.[0-7])$",
+                      value.strip(), re.I)
+    return match.group(1).lower() if match else None
+
+
 class PreflightProvider(Protocol):
     def collect(self, host: Host, request: ActionRequest) -> PreflightSnapshot: ...
 
@@ -45,12 +54,20 @@ class ProductionPreflightProvider:
             device = devices.get(request.parameters.gpu_index)
             mapping = bool(observation.gpu.nvml_ok and device and device.pci_bus)
             if mapping:
+                target_bdf = normalize_pci_bdf(device.pci_bus)
                 pci = next((item for item in observation.gpu.pci_devices
                             if item.device_type == "gpu" and
-                            item.pci_address.lower().endswith(str(device.pci_bus).lower())), None)
+                            normalize_pci_bdf(item.pci_address) == target_bdf), None)
                 mapping = pci is not None
                 gpu_binding = ({"nvidia": "nvidia", "vfio-pci": "vfio"}.get(pci.driver, "unbound")
                                if pci else "unknown")
+        elif request.action_type in {ActionType.VM_MODE_ENABLE, ActionType.VM_MODE_DISABLE}:
+            gpu_devices = [item for item in observation.gpu.pci_devices
+                           if item.device_type == "gpu"]
+            mapping = bool(gpu_devices) and observation.gpu.unknown_bound == 0 and observation.gpu.unbound == 0
+            if mapping and observation.gpu.vfio_bound == len(gpu_devices): gpu_binding = "vfio"
+            elif mapping and observation.gpu.nvidia_bound == len(gpu_devices): gpu_binding = "nvidia"
+            else: gpu_binding = "unknown"
         docker = results.get("get_docker_status")
         docker_lines = docker.stdout.splitlines() if docker and docker.success else []
         containers = [line for line in docker_lines[1:] if line.strip()]
@@ -76,6 +93,13 @@ class ProductionPreflightProvider:
             filesystem_healthy=filesystem is not None and filesystem < 95,
             gpu_mapping_resolved=mapping, gpu_binding=gpu_binding,
             gpu_processes=gpu_processes,
+            nvml_ok=observation.gpu.nvml_ok,
+            gpu_present=bool(observation.gpu.devices and observation.gpu.pci_count),
+            pci_nvidia=observation.gpu.nvidia_bound,
+            pci_vfio=observation.gpu.vfio_bound,
+            pci_unbound=observation.gpu.unbound + observation.gpu.unknown_bound,
+            failed_units=observation.system.failed_units,
+            vast_state=observation.services.get("vastai"),
             docker_running=observation.services.get("docker") == "active",
             signatures=observation.signatures, details=details,
         )

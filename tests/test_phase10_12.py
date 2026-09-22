@@ -364,3 +364,74 @@ def test_unique_followup_creates_proposal_but_never_immediate_write(tmp_path):
     assert followup.proposal is not None
     assert followup.proposal.action_type == ActionType.HOST_REBOOT
     assert remote.calls == []
+
+
+def test_pci_bdf_normalization_accepts_domain_width_variants():
+    from vast_agent.actions.preflight import normalize_pci_bdf
+    expected = "01:00.0"
+    assert normalize_pci_bdf("00000000:01:00.0") == expected
+    assert normalize_pci_bdf("0000:01:00.0") == expected
+    assert normalize_pci_bdf("01:00.0") == expected
+    assert normalize_pci_bdf("not-a-bdf") is None
+
+
+def test_reboot_postcheck_requires_actual_fault_recovery():
+    before = PreflightSnapshot(
+        ssh_reachable=True, target_exists=True, evidence_complete=True,
+        signatures=["NVIDIA_FALLEN_OFF_BUS", "NVML_UNAVAILABLE"], nvml_ok=False,
+        gpu_present=False, pci_nvidia=0, pci_unbound=1, failed_units=0,
+        vast_state="active",
+    )
+    unchanged = before.model_copy(update={"ssh_reachable": True})
+    recovered = before.model_copy(update={
+        "signatures": [], "nvml_ok": True, "gpu_present": True,
+        "pci_nvidia": 1, "pci_unbound": 0,
+    })
+    assert not RebootCoordinator._recovered(before, unchanged)
+    assert RebootCoordinator._recovered(before, recovered)
+    assert not RebootCoordinator._recovered(
+        before, recovered.model_copy(update={"evidence_complete": False}))
+
+
+def test_vm_verify_requires_unambiguous_pci_ownership():
+    from vast_agent.actions.verifier import ProductionActionVerifier
+    request_on = ActionRequest(host="torrent", action_type=ActionType.VM_MODE_ENABLE,
+                               parameters=VMParameters(mode="on"))
+    safe = PreflightSnapshot(ssh_reachable=True, target_exists=True, evidence_complete=True,
+        gpu_mapping_resolved=True, gpu_binding="vfio", pci_vfio=1, pci_nvidia=0)
+    provider = FakePreflight(safe)
+    verifier = ProductionActionVerifier(provider)
+    assert verifier.verify(Host(name="torrent", address="192.0.2.1", ssh_user="a"), request_on).success
+    provider.state = safe.model_copy(update={"gpu_binding": "unknown", "pci_unbound": 1})
+    assert not verifier.verify(Host(name="torrent", address="192.0.2.1", ssh_user="a"), request_on).success
+
+
+def test_slow_approval_is_acknowledged_before_action_finishes():
+    from types import SimpleNamespace
+
+    from vast_agent.discord_app.approval_logic import handle_approval
+    started, release, events = threading.Event(), threading.Event(), []
+    class Response:
+        async def defer(self): events.append("defer")
+        async def send_message(self, content, ephemeral=False): events.append("reject")
+    class Interaction:
+        user = SimpleNamespace(id=7, bot=False)
+        channel_id = 9
+        response = Response()
+        async def edit_original_response(self, **kwargs): events.append(kwargs["content"])
+    class SlowCoordinator:
+        owner_id, channel_id = 7, 9
+        def approve(self, proposal_id, **kwargs):
+            started.set(); release.wait(); events.append("complete")
+            return True, "SUCCEEDED"
+    async def scenario():
+        task = asyncio.create_task(handle_approval(Interaction(), SlowCoordinator(), 41,
+                                                   lambda: events.append("disable")))
+        await asyncio.to_thread(started.wait, 1)
+        assert events[0] == "defer"
+        assert "complete" not in events
+        release.set()
+        await task
+    asyncio.run(scenario())
+    assert events.count("complete") == 1
+    assert events[-1] == "SUCCEEDED"

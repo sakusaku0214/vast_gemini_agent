@@ -111,6 +111,13 @@ class PreflightSnapshot(BaseModel):
     gpu_mapping_resolved: bool = True
     gpu_binding: Literal["nvidia", "vfio", "unbound", "unknown"] | None = None
     gpu_processes: bool = False
+    nvml_ok: bool | None = None
+    gpu_present: bool | None = None
+    pci_nvidia: int = 0
+    pci_vfio: int = 0
+    pci_unbound: int = 0
+    failed_units: int | None = None
+    vast_state: str | None = None
     docker_running: bool | None = None
     signatures: list[str] = Field(default_factory=list)
     details: dict[str, str | int | bool | None] = Field(default_factory=dict)

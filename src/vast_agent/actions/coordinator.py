@@ -108,7 +108,7 @@ class ActionCoordinator:
                     self.db.set_proposal_status(proposal_id, ProposalStatus.INVALIDATED,
                                                 "REBOOT_COORDINATOR_REQUIRED")
                     return False, "REBOOT_COORDINATOR_REQUIRED"
-                trace = self.reboot.execute_approved(host)
+                trace = self.reboot.execute_approved(host, fresh)
                 for event in trace.states:
                     self.db.add_action_event(proposal_id, event, run_id=run_id)
                 success = trace.result == RebootResult.SUCCEEDED
