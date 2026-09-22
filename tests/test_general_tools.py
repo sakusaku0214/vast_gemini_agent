@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 from vast_agent.agent.functions import FUNCTION_DECLARATIONS
 from vast_agent.agent.gemini import ScriptedGeminiClient
 from vast_agent.agent.models import AgentResponse
 from vast_agent.agent.orchestrator import InvestigationAgent
-from vast_agent.config import ExternalToolsSettings, GeminiSettings
+from vast_agent.config import ExternalToolsSettings, GeminiSettings, HostRegistry
+from vast_agent.conversation.state import ConversationStore
 from vast_agent.external_tools.http import ExternalProviderError, SafeJsonClient
 from vast_agent.external_tools.registry import build_general_registry
+from vast_agent.jobs.manager import JobManager
+from vast_agent.models.host import Host
+from vast_agent.models.observation import Observation
+from vast_agent.services.agent_service import AgentService
 from vast_agent.storage.database import Database
 
 
@@ -55,6 +63,27 @@ def make_agent(tmp_path, responses, *, default=None, weather=None, fx=None, sear
         weather=weather or FakeWeather(), fx=fx or FakeFx(), search=search or FakeSearch(),
     )
     return InvestigationAgent(client, HostFunctions(), db, settings or GeminiSettings(), registry), client
+
+
+class FakeInspection:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def inspect_and_record(self, host, executor, scope, cancellation=None):
+        self.calls.append((host.name, scope))
+        return SimpleNamespace(observation=Observation(host=host.name, ssh_ok=True))
+
+
+def make_e2e_service(tmp_path, responses, *, default=None, weather=None, fx=None, search=None):
+    agent, client = make_agent(tmp_path, responses, default=default, weather=weather,
+                               fx=fx, search=search)
+    host = Host(name="garage-mag", aliases=["mag"], address="192.0.2.1", ssh_user="agent")
+    registry = HostRegistry(hosts={host.name: host})
+    db = agent.database
+    inspection = FakeInspection()
+    service = AgentService(registry, inspection, object(), JobManager(db), ConversationStore(db),
+                           agent=agent)
+    return service, client, inspection
 
 
 def call(name, arguments):
@@ -139,3 +168,91 @@ def test_safe_http_rejects_non_https_non_allowlisted_and_private(monkeypatch):
         pass
     else:
         raise AssertionError("private provider address accepted")
+
+
+def test_service_weather_and_fx_reach_general_tool_loop(tmp_path):
+    weather = FakeWeather()
+    service, _, _ = make_e2e_service(
+        tmp_path, [call("get_weather", {"location": "岡山"}),
+                   AgentResponse(output_text="岡山は20度です。")], weather=weather,
+    )
+    reply = asyncio.run(service.handle_question("岡山の天気は？", 1, 2))
+    assert reply.text == "岡山は20度です。"
+    assert "リアルタイム" not in reply.text
+    assert weather.calls == [("岡山", 1)]
+
+    fx = FakeFx()
+    service, _, _ = make_e2e_service(
+        tmp_path, [call("get_fx_rate", {"base_currency": "USD", "quote_currency": "JPY"}),
+                   AgentResponse(output_text="USD/JPYは150です。")], fx=fx,
+    )
+    reply = asyncio.run(service.handle_question("ドル円いくら？", 3, 4))
+    assert reply.text == "USD/JPYは150です。"
+    assert "リアルタイム" not in reply.text
+    assert fx.calls == [("USD", "JPY")]
+
+
+def test_service_search_weather_defaults_and_stable_knowledge(tmp_path):
+    search = FakeSearch()
+    service, _, _ = make_e2e_service(
+        tmp_path, [call("web_search", {"query": "NVIDIA latest driver"}),
+                   AgentResponse(output_text="最新情報とSourcesです。")], search=search,
+    )
+    reply = asyncio.run(service.handle_question("NVIDIAの最新driver情報調べて", 1, 2))
+    assert reply.text == "最新情報とSourcesです。"
+    assert search.calls == [("NVIDIA latest driver", 5)]
+
+    weather = FakeWeather()
+    service, _, _ = make_e2e_service(
+        tmp_path, [call("get_weather", {}), AgentResponse(output_text="どこの天気を確認しますか？")],
+        weather=weather,
+    )
+    reply = asyncio.run(service.handle_question("今日の天気は？", 3, 4))
+    assert reply.text == "どこの天気を確認しますか？"
+    assert weather.calls == []
+
+    service, _, _ = make_e2e_service(
+        tmp_path, [call("get_weather", {}), AgentResponse(output_text="岡山は20度です。")],
+        default="岡山", weather=weather,
+    )
+    reply = asyncio.run(service.handle_question("今日の天気は？", 5, 6))
+    assert reply.text == "岡山は20度です。"
+    assert weather.calls == [("岡山", 1)]
+
+    stable_weather, stable_fx, stable_search = FakeWeather(), FakeFx(), FakeSearch()
+    service, client, _ = make_e2e_service(
+        tmp_path, [AgentResponse(output_text="VFIOはデバイスを分離する仕組みです。")],
+        weather=stable_weather, fx=stable_fx, search=stable_search,
+    )
+    reply = asyncio.run(service.handle_question("VFIOって何？", 7, 8))
+    assert "VFIO" in reply.text
+    assert len(client.requests) == 1
+    assert stable_weather.calls == [] and stable_fx.calls == [] and stable_search.calls == []
+
+
+def test_service_host_read_and_write_never_reach_general_tools(tmp_path):
+    weather, fx, search = FakeWeather(), FakeFx(), FakeSearch()
+    service, client, inspection = make_e2e_service(
+        tmp_path, [], weather=weather, fx=fx, search=search,
+    )
+    read = asyncio.run(service.handle_question("magのGPU温度", 1, 2))
+    assert read.job_id is not None
+    assert inspection.calls == [("garage-mag", "gpu")]
+    write = asyncio.run(service.handle_question("mag再起動して", 1, 2))
+    assert write.text == "WRITE operations are not configured."
+    assert client.requests == []
+    assert weather.calls == [] and fx.calls == [] and search.calls == []
+
+
+def test_unavailable_search_is_discoverable_but_not_declared():
+    disabled = build_general_registry(ExternalToolsSettings(search_provider="disabled"), {})
+    assert "web_search" not in {item["name"] for item in disabled.declarations}
+    listing = disabled.execute("list_capabilities", {})
+    search = next(item for item in listing["untrusted_evidence"]["available_capabilities"]
+                  if item["name"] == "web_search")
+    assert search["available"] is False
+
+    enabled = build_general_registry(
+        ExternalToolsSettings(search_provider="brave"), {"SEARCH_API_KEY": "configured"},
+    )
+    assert "web_search" in {item["name"] for item in enabled.declarations}

@@ -108,16 +108,16 @@ def test_reboot_advice_is_read_only_investigation(tmp_path):
     assert agent.investigations == [("garage-mag", "magは再起動した方がいい？")]
 
 
-def test_realtime_questions_are_not_fabricated(tmp_path):
+def test_realtime_questions_reach_general_agent(tmp_path):
     agent = RecordingAgent()
     service = make_service(tmp_path, agent)
 
     weather = asyncio.run(service.handle_question("今日の天気は？", 1, 2))
     fx = asyncio.run(service.handle_question("ドル円いくら？", 1, 2))
 
-    assert "リアルタイム天気取得tool" in weather.text
-    assert "リアルタイム為替取得tool" in fx.text
-    assert agent.general == []
+    assert weather.text == "一般回答"
+    assert fx.text == "一般回答"
+    assert agent.general == ["今日の天気は？", "ドル円いくら？"]
 
 
 def test_system_formatter_does_not_render_gpu_template():

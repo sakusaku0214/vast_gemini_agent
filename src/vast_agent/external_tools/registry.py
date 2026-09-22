@@ -44,7 +44,8 @@ class GeneralToolRegistry:
 
     @property
     def declarations(self) -> list[dict[str, object]]:
-        return [item.declaration() for item in self._tools.values()]
+        # Keep unavailable capabilities discoverable without inviting the model to call them.
+        return [item.declaration() for item in self._tools.values() if item.available]
 
     def public_capabilities(self) -> list[dict[str, object]]:
         return [{"name": t.name, "description": t.description, "category": t.category,
