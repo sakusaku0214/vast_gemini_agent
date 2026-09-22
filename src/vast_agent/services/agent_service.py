@@ -122,7 +122,7 @@ class AgentService:
         if choices:
             return ServiceReply("hostが曖昧です: " + ", ".join(choices))
         if decision.route == Route.UNKNOWN and host is None:
-            if any(word in folded for word in ("ついでに", "それも", "さっき", "じゃあ", "では")):
+            if self._is_read_follow_up(folded):
                 return ServiceReply("対象hostを指定してください。")
             if self.agent is None:
                 return ServiceReply("Gemini unavailable. 一般質問に回答できません。")
@@ -204,15 +204,60 @@ class AgentService:
         if routed:
             try: return self.registry.resolve(routed), []
             except KeyError: pass
-        # This method is reached only after the deterministic WRITE resolver. Context here is READ-only.
-        read_follow_up = (
-            any(phrase in folded for phrase in ("状態", "ディスク", "gpu", "pci", "vast", "docker", "vm"))
-            or any(word in folded for word in ("ついでに", "それも", "さっき", "じゃあ", "では", "どう？"))
-        )
-        if self.remember_last_host and read_follow_up and state.last_host:
+        # This method is reached only after the deterministic WRITE resolver. Context inheritance
+        # is deliberately limited to READ-shaped follow-ups and is never a WRITE target resolver.
+        if self.remember_last_host and self._is_read_follow_up(folded) and state.last_host:
             try: return self.registry.resolve(state.last_host), []
             except KeyError: pass
         return None, []
+
+    @staticmethod
+    def _is_read_follow_up(text: str) -> bool:
+        """Recognize anaphoric or abbreviated READ questions without guessing a host.
+
+        The vocabulary is grouped by conversational role rather than being used as one routing
+        keyword bag. An explicit host is resolved before this helper, and mutation language always
+        disables inheritance even when a sentence also contains a READ-domain word.
+        """
+        mutation_terms = (
+            "再起動", "restart", "reset", "リセット", "止めて", "停止", "stop",
+            "install", "インストール", "入れて", "remove", "削除", "enable", "disable",
+            "reboot", "shutdown", "kill",
+        )
+        if any(term in text for term in mutation_terms):
+            return False
+
+        # Definitions are general knowledge, not an implicit request to inspect the last host.
+        if re.search(r"(?:って|とは)\s*(?:何|なに)", text):
+            return False
+        if any(marker in text for marker in ("最新", "ニュース", "公開情報", "リリース情報")):
+            return False
+
+        references = (
+            "こいつ", "このマシン", "このホスト", "それ", "そいつ", "そっち",
+            "ついでに", "続けて", "さっき", "じゃあ", "では",
+        )
+        if any(reference in text for reference in references):
+            return True
+        if re.fullmatch(r"\s*(?:ある|どう|生きてる)(?:の)?\s*[?？]?\s*", text):
+            return True
+
+        japanese_domains = (
+            "状態", "ディスク", "ネットワーク", "ネット周り", "インターフェース",
+            "ドライバ", "速度", "サービス", "パッケージ", "プロセス", "カーネル",
+            "実行ファイル", "コマンド", "入ってる", "入れてた", "生きてる",
+        )
+        english_domains = re.search(
+            r"(?<![a-z0-9_])(?:gpu|pci|vast|docker|vm|network|nic|lan|interface|driver|"
+            r"speed|service|package|process|os|kernel|executable)(?![a-z0-9_])",
+            text,
+        )
+        read_question = any(marker in text for marker in (
+            "?", "？", "は", "見て", "調べ", "確認", "どう", "ある", "何", "なに",
+        ))
+        return read_question and (
+            english_domains is not None or any(domain in text for domain in japanese_domains)
+        )
 
     @staticmethod
     def _is_fleet(text: str) -> bool:
