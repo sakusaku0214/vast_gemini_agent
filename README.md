@@ -108,8 +108,15 @@ GEMINI_API_KEY=your-key-here
 
 明白なGPU/PCI/Vast/Docker/VM/ディスク照会とホスト一覧はローカルで決定し、Geminiを0回で
 実行します。原因調査だけがInteractions APIのbounded function-calling loopへ進みます。
-公開functionは `inspect_host`、`collect_evidence`、`get_recent_incidents` のREAD ONLY 3個で、
-任意commandは受け付けません。interactionは `store=false` で、履歴はローカル側が保持します。
+公開functionはmetadata-drivenなHost READ capability registryから生成されます。既存の固定診断に加え、
+package、executable、service、network、interface、process、OS factsの安全なprimitiveを、Geminiが結果に
+応じて複数stepで組み合わせられます。ユーザーがtool名やLinux commandを覚える必要はありません。
+hostごとに現在利用可能なregistry capabilityを照会することもできます。
+
+各primitiveは厳格に型付け・検証された値を、code-owned argv templateの単一要素としてだけ渡します。
+任意shell、任意SSH、任意argv、generic file read、environment/full command line、mutationは公開しません。
+結果はtimeoutと文字数上限を持つuntrusted evidenceであり、不足するcapabilityは推測せず明示します。
+interactionは `store=false` で、履歴はローカル側が保持します。
 
 通常判断はthinking `low`、調査は `medium` です。`high` は設定で許可できますが現Phaseでは
 自動昇格しません。各API callのpurpose/model/thinking levelと、APIが返したtoken count（nullable）を

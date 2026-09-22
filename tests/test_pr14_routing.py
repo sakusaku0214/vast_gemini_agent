@@ -192,7 +192,11 @@ def test_routing_order_and_gemini_function_boundary(tmp_path):
     assert route_intent("magにvnstat入ってる？", registry).route == Route.AGENT
     assert route_intent("自然言語理解できる？", registry).route == Route.UNKNOWN
     assert route_intent("magを再起動して", registry).route == Route.UNSUPPORTED_WRITE
-    assert {item["name"] for item in FUNCTION_DECLARATIONS} == {
-        "inspect_host", "collect_evidence", "get_recent_incidents",
+    assert {"inspect_host", "collect_evidence", "get_recent_incidents"} <= {
+        item["name"] for item in FUNCTION_DECLARATIONS
+    }
+    assert {"query_package", "query_executable", "query_service", "inspect_network",
+            "inspect_interface", "query_process", "inspect_os"} <= {
+        item["name"] for item in FUNCTION_DECLARATIONS
     }
     assert "restart" not in json.dumps(FUNCTION_DECLARATIONS).casefold()
