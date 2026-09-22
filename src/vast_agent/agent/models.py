@@ -167,3 +167,7 @@ class InvestigationResult(BaseModel):
     ] = "CONTINUE_OBSERVING"
     missing_evidence: list[str] = Field(default_factory=list)
     capability_gaps: list[CapabilityGap] = Field(default_factory=list, max_length=3)
+    stop_reason: Literal[
+        "ANSWERABLE", "BOUND_REACHED", "TOOL_UNAVAILABLE", "NO_NEW_EVIDENCE",
+        "CAPABILITY_GAP", "ERROR", "CANCELLED",
+    ] | None = None
