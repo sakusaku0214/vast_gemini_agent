@@ -21,6 +21,7 @@ from vast_agent.agent.models import Route
 from vast_agent.agent.orchestrator import InvestigationAgent
 from vast_agent.agent.prompts import SYSTEM_PROMPT
 from vast_agent.agent.router import route_intent
+from vast_agent.capabilities import apply_capabilities, detect_capabilities
 from vast_agent.config import (
     ConfigError,
     initialize_config,
@@ -53,6 +54,8 @@ def parser() -> argparse.ArgumentParser:
         sub.add_parser(name)
     for name in ("trust-host", "test-host"):
         item = sub.add_parser(name); item.add_argument("host")
+    detect = sub.add_parser("detect-capabilities"); detect.add_argument("host")
+    detect.add_argument("--apply", action="store_true")
     inspect = sub.add_parser("inspect"); inspect.add_argument("host")
     flags = inspect.add_mutually_exclusive_group()
     for group in GROUPS: flags.add_argument(f"--{group}", action="store_true")
@@ -313,6 +316,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "test-host":
         result = run_tool("host_ping", host, executor)
         print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2)); return 0 if result.success else 2
+    if args.command == "detect-capabilities":
+        ping = run_tool("host_ping", host, executor)
+        if not ping.success:
+            print(f"{host.name}\nSSH: ERROR", file=sys.stderr)
+            return 2
+        capabilities = detect_capabilities(host, executor)
+        print(f"{host.name}\nSSH: OK")
+        for name, value in capabilities.model_dump().items():
+            print(f"{name}: {'true' if value else 'false'}")
+        if args.apply:
+            try:
+                apply_capabilities(paths.hosts_file, host.name, capabilities)
+            except (OSError, ConfigError, KeyError) as exc:
+                print(f"ERROR CONFIG_INVALID: {exc}", file=sys.stderr)
+                return 2
+            print("hosts.yaml updated")
+        return 0
     if args.command == "inspect":
         group = next((name for name in GROUPS if getattr(args, name)), None)
         record = InspectionService(

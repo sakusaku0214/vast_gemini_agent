@@ -64,6 +64,7 @@ Cancel Buttonは現Phaseではgatewayへ接続しておらず、cancelは上記�
 .\vast-agent.ps1 hosts
 .\vast-agent.ps1 trust-host HOST
 .\vast-agent.ps1 test-host HOST
+.\vast-agent.ps1 detect-capabilities HOST [--apply]
 .\vast-agent.ps1 inspect HOST [--gpu|--pci|--vast|--docker|--vm] [--json]
 .\vast-agent.ps1 ask "garage-torrentのGPU温度"
 .\vast-agent.ps1 ask "garage-torrentなんかおかしくない？"
@@ -75,6 +76,10 @@ Cancel Buttonは現Phaseではgatewayへ接続しておらず、cancelは上記�
 `trust-host` は `ssh-keyscan` の候補fingerprintを表示し、利用者が別経路で照合して `YES` と
 明示するまで専用known_hostsへ書きません。Windows標準`ssh-keyscan`のKEX互換問題時は、認証を
 無効にした`ssh`と一時known_hostsで候補鍵だけを安全に取得します。鍵変更は自動承認しません。
+
+`detect-capabilities` は登録済みhostへ固定のREAD-only probeだけを実行します。`--apply` を付けると、
+検出した`nvidia`、`docker`、`libvirt`、`vast`の値だけをlocal runtimeの`hosts.yaml`へatomicに保存し、
+address、user、aliases、enabledやoperations設定は変更しません。
 
 `migrate-v1` は対象ファイルを実行せず、ASTのliteral `MACHINES` だけを読みます。同名hostは
 上書きせず、tokenや環境変数を取り込みません。

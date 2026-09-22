@@ -32,7 +32,7 @@ TOOLS: Final[dict[str, ToolMetadata]] = {
     "get_vast_logs": ToolMetadata("get_vast_logs", "Recent Vast warnings", "read_only", ("vast",), 20, ("journalctl", "-u", "vastai.service", "-n", "200", "--no-pager", "-p", "warning")),
     "get_docker_status": ToolMetadata("get_docker_status", "Docker service and containers", "read_only", ("docker",), 20, ("sh", "-c", "systemctl is-active docker; docker ps -a --format '{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}'")),
     "get_vm_status": ToolMetadata("get_vm_status", "Libvirt domains and QEMU processes", "read_only", ("libvirt",), 20, ("sh", "-c", "virsh list --all; pgrep -a qemu-system || true")),
-    "get_service_status": ToolMetadata("get_service_status", "Allowlisted service states", "read_only", (), 15, ("systemctl", "show", "vastai.service", "docker.service", "libvirtd.service", "--property=Id,ActiveState,SubState,MainPID")),
+    "get_service_status": ToolMetadata("get_service_status", "Allowlisted service states", "read_only", (), 15, ("systemctl", "show", "vastai.service", "docker.service", "libvirtd.service", "--property=Id,LoadState,ActiveState,SubState,MainPID")),
     "get_journal_errors": ToolMetadata("get_journal_errors", "Recent boot errors", "read_only", (), 20, ("journalctl", "-b", "-p", "err", "-n", "200", "--no-pager")),
     "read_config": ToolMetadata("read_config", "Read allowlisted non-secret Vast config", "read_only", ("vast",), 10, ("cat", "/var/lib/vastai_kaalia/host_enabled")),
 }
