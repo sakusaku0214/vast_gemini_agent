@@ -52,8 +52,15 @@ class InspectionService:
         self.database.migrate()
         self.database.upsert_host(host)
         names = GROUPS[group] if group else FULL
-        results = {name: run_tool(name, host, executor) for name in names}
-        observation = build_observation(host.name, results)
+        ping = run_tool("host_ping", host, executor)
+        results = {"host_ping": ping}
+        if ping.success:
+            results.update({
+                name: run_tool(name, host, executor)
+                for name in names
+                if name != "host_ping"
+            })
+        observation = self._redact_observation(build_observation(host.name, results))
         log_paths = {
             name: self._save_raw_log(observation, name, result)
             for name, result in results.items()
@@ -75,6 +82,18 @@ class InspectionService:
             if signature in INCIDENT_SIGNATURES
         }
         return InspectionRecord(observation, observation_id, results, incidents)
+
+    def _redact_observation(self, observation: Observation) -> Observation:
+        def clean(value: object) -> object:
+            if isinstance(value, str):
+                return redact(value, self.secrets)
+            if isinstance(value, dict):
+                return {key: clean(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [clean(item) for item in value]
+            return value
+
+        return Observation.model_validate(clean(observation.model_dump()))
 
     def _save_raw_log(
         self, observation: Observation, tool_name: str, result: ToolResult,

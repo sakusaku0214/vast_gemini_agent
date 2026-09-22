@@ -44,25 +44,37 @@ def parse_pci(text: str) -> dict[str, object]:
         "pci_devices": [],
     }
     blocks = re.split(r"\n(?=\S)", text.strip()) if text.strip() else []
+    nvidia_gpu_groups = {
+        block.splitlines()[0].split()[0].rsplit(".", 1)[0]
+        for block in blocks
+        if any(token in block.splitlines()[0].lower() for token in ("vga", "3d controller"))
+        and ("nvidia corporation" in block.splitlines()[0].lower()
+             or re.search(r"\[10de:[0-9a-f]{4}\]", block.splitlines()[0], re.I))
+    }
     for block in blocks:
-        low = block.lower()
         header = block.splitlines()[0]
         address_match = re.match(r"(\S+)", header)
-        is_gpu = "vga" in low or "3d controller" in low
-        is_audio = "audio" in low
-        if not address_match or not (is_gpu or is_audio):
+        if not address_match:
+            continue
+        address = address_match.group(1)
+        group = address.rsplit(".", 1)[0]
+        header_low = header.lower()
+        is_gpu = group in nvidia_gpu_groups and any(
+            token in header_low for token in ("vga", "3d controller")
+        )
+        is_audio = group in nvidia_gpu_groups and "audio" in header_low
+        if not (is_gpu or is_audio):
             continue
         match = re.search(r"Kernel driver in use:\s*(\S+)", block, re.I)
         driver = match.group(1) if match else None
         modules_match = re.search(r"Kernel modules:\s*(.+)", block, re.I)
         modules = [item.strip() for item in modules_match.group(1).split(",")] if modules_match else []
-        address = address_match.group(1)
         values["pci_devices"].append(PciDevice(
             pci_address=address,
             device_type="gpu" if is_gpu else "audio",
             driver=driver,
             modules=modules,
-            function_group=address.rsplit(".", 1)[0],
+            function_group=group,
         ))
         if not is_gpu:
             continue

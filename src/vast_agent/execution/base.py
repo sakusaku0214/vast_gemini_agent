@@ -16,6 +16,7 @@ class FakeExecutor:
 
     def __init__(self, results: Mapping[str, ToolResult]) -> None:
         self.results = results
+        self.calls: list[str] = []
 
     def execute(self, host: Host, command: Sequence[str], timeout: int) -> ToolResult:
         del host, command, timeout
@@ -28,6 +29,7 @@ class FakeExecutor:
         self, name: str, host: Host, command: Sequence[str], timeout: int,
     ) -> ToolResult:
         del host, command, timeout
+        self.calls.append(name)
         return self.results.get(
             name,
             ToolResult(

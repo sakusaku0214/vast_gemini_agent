@@ -46,6 +46,15 @@ def test_pci_gpu_and_audio_functions_are_structured(case, gpu_driver, audio_driv
     assert devices[0].modules
 
 
+def test_pci_ignores_non_nvidia_vga_and_unrelated_audio():
+    pci = parse_pci(fixture_results("mixed_vendors")["get_pci_status"].stdout)
+    assert pci["pci_count"] == 1
+    assert pci["nvidia_bound"] == 1
+    assert [device.pci_address for device in pci["pci_devices"]] == [
+        "0000:02:00.0", "0000:02:00.1",
+    ]
+
+
 def test_registry_fixture_replay_reaches_observation_and_signatures(host):
     results = fixture_results("fallen_off_bus")
     observation = inspect_host(host, FakeExecutor(results))
