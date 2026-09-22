@@ -5,6 +5,7 @@ import subprocess
 from unittest.mock import Mock
 
 import pytest
+from pydantic import ValidationError
 
 from vast_agent.actions.executor import TypedActionExecutor
 from vast_agent.actions.models import (
@@ -118,6 +119,13 @@ def test_remote_shell_executes_serialized_argv_without_expanding_tokens():
     ]
 
 
+def test_vm_script_validation_rejects_shell_metacharacters():
+    with pytest.raises(ValidationError, match="shell metacharacters"):
+        OperationsSettings(
+            enable_vms_script="/opt/vm scripts/$(touch injected)/enable_vms.py",
+        )
+
+
 @pytest.mark.parametrize(
     ("action_request", "settings", "expected_argv"),
     [
@@ -146,11 +154,11 @@ def test_remote_shell_executes_serialized_argv_without_expanding_tokens():
                 parameters=VMParameters(mode="on"),
             ),
             OperationsSettings(
-                enable_vms_script="/opt/vm scripts/$(touch injected)/enable_vms.py",
+                enable_vms_script="/opt/vast tools/enable_vms.py",
             ),
             (
                 "sudo", "-n", "python3",
-                "/opt/vm scripts/$(touch injected)/enable_vms.py", "on", "-f",
+                "/opt/vast tools/enable_vms.py", "on", "-f",
             ),
         ),
     ],

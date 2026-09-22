@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -57,10 +57,17 @@ class OperationsSettings(BaseModel):
     def validate_vm_script(cls, value: str | None) -> str | None:
         if value is None:
             return None
+        # This is a remote POSIX path, so validation must not depend on the
+        # platform where the agent happens to run (notably Windows CI).
+        path = PurePosixPath(value)
+        shell_metacharacters = frozenset("\\'\"`$;&|<>()[]{}*?!#~")
         if "\x00" in value:
             raise ValueError("enable_vms_script contains NUL")
-        path = Path(value)
-        if not path.is_absolute() or path.name != "enable_vms.py" or "\\" in value:
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("enable_vms_script contains control characters")
+        if any(character in shell_metacharacters for character in value):
+            raise ValueError("enable_vms_script contains shell metacharacters")
+        if not path.is_absolute() or path.name != "enable_vms.py":
             raise ValueError("enable_vms_script must be an absolute POSIX path named enable_vms.py")
         return value
 
