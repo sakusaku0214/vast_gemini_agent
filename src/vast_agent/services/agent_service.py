@@ -4,6 +4,12 @@ import asyncio
 import re
 from dataclasses import dataclass
 
+from vast_agent.actions.capability_bridge import (
+    AcquisitionIntent,
+    acquisition_intent,
+    assess_gap,
+    request_for_gap,
+)
 from vast_agent.actions.models import (
     ActionRequest,
     ActionType,
@@ -11,6 +17,7 @@ from vast_agent.actions.models import (
     ProposalStatus,
     RebootParameters,
 )
+from vast_agent.actions.package_catalog import capability_definition
 from vast_agent.actions.preflight import package_manager_state
 from vast_agent.actions.resolver import ActionIntentResolver
 from vast_agent.agent.models import Route
@@ -114,7 +121,8 @@ class AgentService:
             summary = self._proposal_text(proposal, policy) + disabled
             return ServiceReply(self._clean(summary), proposal=proposal, policy=policy)
 
-        if any(word in folded for word in ("入れて", "install", "インストール")):
+        if (acquisition_intent(text) == AcquisitionIntent.EXPLICIT_INSTALL
+                and any(word in folded for word in ("入れて", "install", "インストール"))):
             try:
                 self.registry.resolve_in_text(text)
             except KeyError:
@@ -143,6 +151,8 @@ class AgentService:
         if choices:
             return ServiceReply("hostが曖昧です: " + ", ".join(choices))
         if decision.route == Route.UNKNOWN and host is None:
+            if acquisition_intent(text) != AcquisitionIntent.READ_ONLY:
+                return ServiceReply("WRITE対象のhostを明示してください。")
             if self._is_read_follow_up(folded):
                 return ServiceReply("対象hostを指定してください。")
             if self.agent is None:
@@ -172,6 +182,7 @@ class AgentService:
         self.conversations.save(owner, channel, state)
         self.jobs.start(job)
         lock_class = LockClass.HEAVY_READ if decision.route == Route.AGENT else LockClass.READ
+        investigation_result = None
         def work():
             context = current_cancellation.set(token)
             try:
@@ -180,18 +191,42 @@ class AgentService:
                     if decision.route == Route.AGENT:
                         if self.agent is None: return "Gemini unavailable: GEMINI_API_KEY is not configured."
                         result = self.agent.investigate(host.name, safe_text)
-                        return self._clean(self._format_investigation(host.name, result))
+                        return result
                     record = self.inspection.inspect_and_record(host, self.executor, decision.scope, token)
                     return self._format_observation(record.observation, decision.scope)
             finally:
                 current_cancellation.reset(context)
         try:
-            summary = await asyncio.to_thread(work)
+            work_result = await asyncio.to_thread(work)
+            if decision.route == Route.AGENT and not isinstance(work_result, str):
+                investigation_result = work_result
+                summary = self._format_investigation(host.name, work_result)
+            else:
+                summary = work_result
             summary = self._clean(summary)
             self.jobs.finish(job, summary)
         except Exception:
             summary = "調査を完了できませんでした。詳細はagent logを確認してください。"
             self.jobs.finish(job, summary, "SERVICE_ERROR")
+        if (investigation_result is not None
+                and acquisition_intent(text) == AcquisitionIntent.PROPOSE_IF_NEEDED):
+            requests = [
+                request_for_gap(host.name, gap)
+                for gap in getattr(investigation_result, "capability_gaps", [])
+            ]
+            requests = [request for request in requests if request is not None]
+            # Minimum-capability and no-chaining rule: one unambiguous acquisition at most.
+            if len(requests) == 1:
+                if self.actions is None:
+                    summary += "\n\nWRITE operations are not configured; Proposalは作成されません。"
+                else:
+                    proposal = await asyncio.to_thread(self.actions.propose, requests[0], str(owner))
+                    policy = "BLOCK" if proposal.status == ProposalStatus.BLOCKED else "ALLOW"
+                    rendered = self._proposal_text(proposal, policy)
+                    return ServiceReply(
+                        self._clean(f"Job #{job.id}\n{summary}\n\n{rendered}"),
+                        job.id, proposal=proposal, policy=policy,
+                    )
         return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
 
     @staticmethod
@@ -386,5 +421,22 @@ class AgentService:
     @staticmethod
     def _format_investigation(host, result) -> str:
         signatures = "\n".join(f"• {item}" for item in result.signatures) or "• none"
+        gaps = []
+        for gap in getattr(result, "capability_gaps", []):
+            gap = assess_gap(gap)
+            definition = capability_definition(gap.capability_id)
+            if definition is None:
+                continue
+            evidence = "\n".join(f"- {item}" for item in gap.evidence) or "- 確認情報なし"
+            state = {"available": "利用可能", "missing": "不足", "unknown": "確認不能"}[gap.status]
+            note = ""
+            if gap.status == "missing":
+                note = f"\nCatalog候補: {definition.package_name}"
+                if definition.post_install_notes:
+                    note += f"\n{definition.post_install_notes}"
+            gaps.append(
+                f"能力: {gap.capability_id} ({state})\n理由: {gap.reason}\n確認:\n{evidence}{note}"
+            )
+        gap_text = "\n\nCapability gap:\n" + "\n\n".join(gaps) if gaps else ""
         return (f"🔎 {host} — 調査結果\n\n要約:\n{result.summary}\n\n検出:\n{signatures}\n\n"
-                f"提案:\n{result.recommended_action}\n\n確度:\n{result.confidence}")
+                f"提案:\n{result.recommended_action}\n\n確度:\n{result.confidence}{gap_text}")

@@ -18,6 +18,7 @@ from vast_agent.actions.models import (
 from vast_agent.actions.policies import PolicyEngine
 from vast_agent.actions.preflight import PACKAGE_TOOLS, ProductionPreflightProvider
 from vast_agent.actions.resolver import ActionIntentResolver
+from vast_agent.agent.models import CapabilityGap, InvestigationResult
 from vast_agent.config import HostRegistry, OperationsSettings
 from vast_agent.conversation.state import ConversationStore
 from vast_agent.jobs.manager import JobManager
@@ -229,7 +230,10 @@ def test_resolver_only_emits_catalog_package_and_gemini_has_no_write_tool():
         "garage-mag": Host(name="garage-mag", address="192.0.2.8", ssh_user="agent"),
     })
     resolver = ActionIntentResolver(hosts)
-    resolved = resolver.resolve("garage-magの昨日の通信量見たい。必要なら入れて")
+    # Goal-shaped acquisition is deliberately left for Gemini capability reasoning;
+    # only an explicit catalog package remains on this deterministic path.
+    assert resolver.resolve("garage-magの昨日の通信量見たい。必要なら入れて") is None
+    resolved = resolver.resolve("garage-magにvnstat入れて")
     assert resolved is not None
     assert resolved.action_type == ActionType.PACKAGE_INSTALL
     assert resolved.parameters.package_name == "vnstat"
@@ -297,3 +301,54 @@ def test_production_preflight_unexpected_fuser_failure_is_unknown_and_blocked():
     ))
     assert decision.decision == "BLOCK"
     assert "PACKAGE_MANAGER_BUSY" in decision.reasons
+
+
+class GapAgent:
+    def __init__(self, status="missing"):
+        self.status = status
+
+    def investigate(self, host, text):
+        return InvestigationResult(
+            summary="traffic history check", confidence="high", recommended_action="NONE",
+            capability_gaps=[CapabilityGap(
+                capability_id="traffic_history", status=self.status,
+                software_status=self.status,
+                reason="package and executable checked", evidence=[f"vnstat: {self.status}"],
+                candidate_package="curl", confidence="high",
+            )],
+        )
+
+
+@pytest.mark.parametrize(("text", "status", "proposal_count"), [
+    ("garage-magの昨日の通信量見て", "missing", 0),
+    ("garage-magの昨日の通信量見たい。必要なら入れて", "missing", 1),
+    ("garage-magの昨日の通信量見たい。必要なら入れて", "available", 0),
+    ("garage-magの昨日の通信量見たい。必要なら入れて", "unknown", 0),
+])
+def test_goal_gap_bridge_proposes_only_confirmed_missing_with_consent(
+    tmp_path, text, status, proposal_count,
+):
+    db, actions, remote, _ = coordinator(tmp_path)
+    service = AgentService(
+        actions.hosts, object(), remote, JobManager(db), ConversationStore(db),
+        agent=GapAgent(status), actions=actions,
+    )
+    reply = asyncio.run(service.handle_question(text, 7, 9))
+    assert db.pending_approval_count() == proposal_count
+    assert (reply.proposal is not None) is bool(proposal_count)
+    assert remote.calls == []
+    if proposal_count:
+        assert reply.proposal.parameters.package_name == "vnstat"
+
+
+def test_bare_acquisition_followup_never_reuses_read_last_host(tmp_path):
+    db, actions, remote, _ = coordinator(tmp_path)
+    service = AgentService(
+        actions.hosts, object(), remote, JobManager(db), ConversationStore(db),
+        agent=GapAgent(), actions=actions,
+    )
+    asyncio.run(service.handle_question("garage-magの昨日の通信量見て", 7, 9))
+    reply = asyncio.run(service.handle_question("じゃあ必要なら入れて", 7, 9))
+    assert "hostを明示" in reply.text
+    assert reply.proposal is None
+    assert db.pending_approval_count() == 0
