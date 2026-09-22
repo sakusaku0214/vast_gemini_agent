@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import re
 
-from vast_agent.models.observation import GpuDevice, GpuSummary, Observation, SystemSummary
+from vast_agent.models.observation import (
+    GpuDevice,
+    GpuSummary,
+    Observation,
+    PciDevice,
+    SystemSummary,
+)
 from vast_agent.models.tool_result import ToolResult
 
 
@@ -28,17 +34,54 @@ def parse_gpu(result: ToolResult) -> tuple[bool, str | None, list[GpuDevice]]:
     return True, None, devices
 
 
-def parse_pci(text: str) -> dict[str, int]:
-    values = {"pci_count": 0, "nvidia_bound": 0, "vfio_bound": 0, "unbound": 0, "unknown_bound": 0}
+def parse_pci(text: str) -> dict[str, object]:
+    values: dict[str, object] = {
+        "pci_count": 0,
+        "nvidia_bound": 0,
+        "vfio_bound": 0,
+        "unbound": 0,
+        "unknown_bound": 0,
+        "pci_devices": [],
+    }
     blocks = re.split(r"\n(?=\S)", text.strip()) if text.strip() else []
+    nvidia_gpu_groups = {
+        block.splitlines()[0].split()[0].rsplit(".", 1)[0]
+        for block in blocks
+        if any(token in block.splitlines()[0].lower() for token in ("vga", "3d controller"))
+        and ("nvidia corporation" in block.splitlines()[0].lower()
+             or re.search(r"\[10de:[0-9a-f]{4}\]", block.splitlines()[0], re.I))
+    }
     for block in blocks:
-        low = block.lower()
-        if not any(token in low for token in ("vga", "3d controller")): continue
-        values["pci_count"] += 1
+        header = block.splitlines()[0]
+        address_match = re.match(r"(\S+)", header)
+        if not address_match:
+            continue
+        address = address_match.group(1)
+        group = address.rsplit(".", 1)[0]
+        header_low = header.lower()
+        is_gpu = group in nvidia_gpu_groups and any(
+            token in header_low for token in ("vga", "3d controller")
+        )
+        is_audio = group in nvidia_gpu_groups and "audio" in header_low
+        if not (is_gpu or is_audio):
+            continue
         match = re.search(r"Kernel driver in use:\s*(\S+)", block, re.I)
-        if not match: values["unbound"] += 1
-        elif match.group(1) == "nvidia": values["nvidia_bound"] += 1
-        elif match.group(1) == "vfio-pci": values["vfio_bound"] += 1
+        driver = match.group(1) if match else None
+        modules_match = re.search(r"Kernel modules:\s*(.+)", block, re.I)
+        modules = [item.strip() for item in modules_match.group(1).split(",")] if modules_match else []
+        values["pci_devices"].append(PciDevice(
+            pci_address=address,
+            device_type="gpu" if is_gpu else "audio",
+            driver=driver,
+            modules=modules,
+            function_group=group,
+        ))
+        if not is_gpu:
+            continue
+        values["pci_count"] += 1
+        if not driver: values["unbound"] += 1
+        elif driver == "nvidia": values["nvidia_bound"] += 1
+        elif driver == "vfio-pci": values["vfio_bound"] += 1
         else: values["unknown_bound"] += 1
     return values
 

@@ -12,18 +12,28 @@ class Executor(Protocol):
 
 
 class FakeExecutor:
-    """Deterministic executor for fixture replay; keys are immutable command IDs."""
+    """Deterministic executor whose fixtures are keyed by registry tool name."""
 
     def __init__(self, results: Mapping[str, ToolResult]) -> None:
         self.results = results
+        self.calls: list[str] = []
 
     def execute(self, host: Host, command: Sequence[str], timeout: int) -> ToolResult:
-        del host, timeout
-        key = command[0]
+        del host, command, timeout
+        return ToolResult(
+            success=False, exit_code=127, stderr="FakeExecutor requires a tool name", duration_ms=0,
+            error_code=ErrorCode.COMMAND_FAILED,
+        )
+
+    def execute_tool(
+        self, name: str, host: Host, command: Sequence[str], timeout: int,
+    ) -> ToolResult:
+        del host, command, timeout
+        self.calls.append(name)
         return self.results.get(
-            key,
+            name,
             ToolResult(
-                success=False, exit_code=127, stderr=f"No fixture for {key}", duration_ms=0,
+                success=False, exit_code=127, stderr=f"No fixture for {name}", duration_ms=0,
                 error_code=ErrorCode.COMMAND_FAILED,
             ),
         )

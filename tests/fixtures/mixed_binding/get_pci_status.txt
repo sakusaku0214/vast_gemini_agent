@@ -1,0 +1,6 @@
+0000:01:00.0 3D controller [0302]: NVIDIA Corporation Example [10de:0001]
+	Kernel driver in use: nvidia
+	Kernel modules: nvidiafb, nouveau, nvidia_drm, nvidia
+0000:01:00.1 Audio device [0403]: NVIDIA Corporation Example Audio [10de:0002]
+	Kernel driver in use: vfio-pci
+	Kernel modules: snd_hda_intel

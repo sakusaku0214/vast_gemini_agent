@@ -34,10 +34,13 @@ class RuntimePaths:
     def database(self) -> Path: return self.root / "data" / "agent.db"
     @property
     def incident_logs(self) -> Path: return self.root / "logs" / "incidents"
+    @property
+    def observation_logs(self) -> Path: return self.root / "logs" / "observations"
 
     def create(self) -> None:
         for part in (
             "config", "secrets", "ssh", "data", "logs/agent", "logs/incidents",
+            "logs/observations",
             "backups", "state",
         ):
             (self.root / part).mkdir(parents=True, exist_ok=True)

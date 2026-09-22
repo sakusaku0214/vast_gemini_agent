@@ -8,9 +8,10 @@ from pathlib import Path
 
 from vast_agent.config import ConfigError, initialize_config, load_hosts
 from vast_agent.execution.ssh import SSHExecutor
-from vast_agent.inspector import GROUPS, inspect_host
+from vast_agent.inspector import GROUPS
 from vast_agent.migrate_v1 import migrate_v1
 from vast_agent.paths import RuntimePaths
+from vast_agent.services.inspection import InspectionService, load_redaction_secrets
 from vast_agent.storage.database import Database
 from vast_agent.tools.registry import run_tool
 from vast_agent.trust import trust_host
@@ -102,7 +103,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2)); return 0 if result.success else 2
     if args.command == "inspect":
         group = next((name for name in GROUPS if getattr(args, name)), None)
-        observation = inspect_host(host, executor, group)
+        record = InspectionService(
+            Database(paths.database), paths.observation_logs,
+            load_redaction_secrets(paths.secrets_file),
+        ).inspect_and_record(host, executor, group)
+        observation = record.observation
         payload = observation.model_dump(mode="json")
         if args.json: print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:

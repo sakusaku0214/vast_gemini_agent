@@ -13,9 +13,22 @@ def test_all_required_read_only_tools_registered():
 
 
 def test_fake_executor_and_no_external_command(host):
-    fake = FakeExecutor({"true": ToolResult(success=True, exit_code=0, stdout="ok", duration_ms=1)})
+    fake = FakeExecutor({
+        "host_ping": ToolResult(success=True, exit_code=0, stdout="ok", duration_ms=1),
+    })
     assert run_tool("host_ping", host, fake).stdout == "ok"
     assert run_tool("not-a-tool", host, fake).error_code == "TOOL_UNSUPPORTED"
+
+
+def test_fake_executor_distinguishes_tools_with_same_command(host):
+    fake = FakeExecutor({
+        "get_system_health": ToolResult(success=True, stdout="health", duration_ms=1),
+        "get_docker_status": ToolResult(success=True, stdout="docker", duration_ms=1),
+        "get_vm_status": ToolResult(success=True, stdout="vm", duration_ms=1),
+    })
+    assert run_tool("get_system_health", host, fake).stdout == "health"
+    assert run_tool("get_docker_status", host, fake).stdout == "docker"
+    assert run_tool("get_vm_status", host, fake).stdout == "vm"
 
 
 def test_redaction():

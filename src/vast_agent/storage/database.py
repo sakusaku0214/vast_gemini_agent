@@ -7,6 +7,7 @@ from pathlib import Path
 
 from vast_agent.models.host import Host
 from vast_agent.models.observation import Observation
+from vast_agent.models.tool_result import ToolResult
 from vast_agent.storage.migrations import MIGRATIONS
 
 
@@ -45,6 +46,21 @@ class Database:
                 "INSERT INTO observations(host,observed_at,payload_json,raw_log_path) VALUES(?,?,?,?)",
                 (observation.host, observation.observed_at.isoformat(),
                  json.dumps(observation.model_dump(mode="json"), ensure_ascii=False), raw_log_path),
+            )
+            return int(cursor.lastrowid)
+
+    def save_tool_run(
+        self, observation_id: int, tool_name: str, result: ToolResult,
+        raw_log_path: str | None = None,
+    ) -> int:
+        with self.connect() as db:
+            cursor = db.execute(
+                "INSERT INTO tool_runs(observation_id,tool_name,success,exit_code,duration_ms,"
+                "error_code,raw_log_path) VALUES(?,?,?,?,?,?,?)",
+                (
+                    observation_id, tool_name, result.success, result.exit_code,
+                    result.duration_ms, result.error_code, raw_log_path,
+                ),
             )
             return int(cursor.lastrowid)
 
