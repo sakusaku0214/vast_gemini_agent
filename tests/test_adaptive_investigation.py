@@ -90,10 +90,82 @@ def test_exact_repeat_is_deduplicated(tmp_path, host):
     repeated = {"host": host.name, "scope": "routes"}
     agent, _, remote = make_agent(tmp_path, host, [
         call("inspect_network", repeated), call("inspect_network", repeated, "2"),
+        answer("used retained network evidence"),
     ])
     result = agent.investigate(host.name, "ネット遅くない？")
-    assert result.stop_reason == "NO_NEW_EVIDENCE"
+    assert result.summary == "used retained network evidence"
+    assert result.stop_reason == "ANSWERABLE"
     assert remote.calls.count("inspect_network:routes") == 1
+
+
+def test_tool_budget_stops_pending_read_and_uses_tool_free_synthesis(tmp_path, host):
+    agent, client, remote = make_agent(tmp_path, host, [
+        call("inspect_network", {"host": host.name, "scope": "routes"}),
+        call("query_nvme_health", {"host": host.name}, "2"),
+        answer("partial answer from routes"),
+    ], max_tool_calls=1)
+
+    result = agent.investigate(host.name, "ネットとSSDを確認して")
+
+    assert result.summary == "partial answer from routes"
+    assert result.stop_reason == "ANSWERABLE"
+    assert client.calls == 3
+    assert client.requests[-1]["tools"] == []
+    assert "No more tools are available" in json.dumps(client.requests[-1]["inputs"])
+    assert remote.calls == ["inspect_network:routes"]
+
+
+def test_final_synthesis_error_preserves_existing_evidence(tmp_path, host):
+    agent, client, remote = make_agent(tmp_path, host, [
+        call("inspect_network", {"host": host.name, "scope": "routes"}),
+        call("inspect_network", {"host": host.name, "scope": "routes"}, "2"),
+        RuntimeError("provider unavailable"),
+    ])
+
+    result = agent.investigate(host.name, "ネットを確認して")
+
+    assert result.stop_reason == "ERROR"
+    assert result.findings
+    assert client.requests[-1]["tools"] == []
+    assert remote.calls == ["inspect_network:routes"]
+
+
+def test_function_call_from_tool_free_synthesis_fails_closed(tmp_path, host):
+    agent, client, remote = make_agent(tmp_path, host, [
+        call("inspect_network", {"host": host.name, "scope": "routes"}),
+        call("inspect_network", {"host": host.name, "scope": "routes"}, "2"),
+        call("query_nvme_health", {"host": host.name}, "3"),
+    ])
+
+    result = agent.investigate(host.name, "ネットを確認して")
+
+    assert result.stop_reason == "BOUND_REACHED"
+    assert result.findings
+    assert client.requests[-1]["tools"] == []
+    assert remote.calls == ["inspect_network:routes"]
+
+
+def test_evidence_limit_rejection_still_allows_synthesis(tmp_path, host):
+    agent, client, _ = make_agent(tmp_path, host, [answer("bounded evidence conclusion")])
+    session = InvestigationSession(
+        target_host=host.name, goal="bounded", max_total_evidence_chars=220,
+    )
+    add_record(session, "first", {"host": host.name}, {"state": "known"})
+    oversized = compact_evidence("second", {"untrusted_evidence": {"x": "x" * 1000}}, 1000)
+    assert not session.add("second", {"host": host.name}, oversized)
+    assert len(session.evidence) == 1
+
+    result = agent._synthesize_from_evidence(
+        session, [_user_input_for_test("bounded")], StopReason.BOUND_REACHED,
+    )
+
+    assert result.summary == "bounded evidence conclusion"
+    assert client.requests[-1]["tools"] == []
+    assert "first" in json.dumps(client.requests[-1]["inputs"])
+
+
+def _user_input_for_test(text):
+    return {"type": "user_input", "content": [{"type": "text", "text": text}]}
 
 
 def test_unknown_and_write_tools_fail_closed_without_execution(tmp_path, host):
