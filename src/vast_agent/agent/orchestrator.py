@@ -22,6 +22,55 @@ from vast_agent.storage.database import Database
 logger = logging.getLogger(__name__)
 
 
+def _result_shape(output: str) -> dict[str, object]:
+    stripped = output.lstrip()
+    return {
+        "output_chars": len(output),
+        "starts_with_json_object": stripped.startswith("{"),
+        "contains_code_fence": "```" in output,
+    }
+
+
+def _short_safe_message(message: str, *, limit: int = 180) -> str:
+    """Bound exception metadata; never include model output or Pydantic input values."""
+    return " ".join(message.split())[:limit]
+
+
+def safe_validation_errors(exc: ValidationError) -> list[dict[str, object]]:
+    """Return only non-input, non-context Pydantic diagnostics suitable for redacted logs."""
+    return [
+        {
+            "loc": list(error.get("loc", ())),
+            "type": str(error.get("type", "validation_error")),
+            "msg": _short_safe_message(str(error.get("msg", "validation failed"))),
+        }
+        for error in exc.errors(include_url=False, include_context=False, include_input=False)
+    ]
+
+
+def _log_result_validation_failure(exc: ValueError, output: str) -> None:
+    metadata = _result_shape(output)
+    if isinstance(exc, ValidationError):
+        errors = safe_validation_errors(exc)
+        logger.warning(
+            "InvestigationResult validation failed error_count=%s errors=%s metadata=%s",
+            len(errors), errors, metadata,
+        )
+        return
+    logger.warning(
+        "InvestigationResult parsing failed error_type=%s message=%s metadata=%s",
+        type(exc).__name__,
+        _short_safe_message(exc.msg)
+        if isinstance(exc, json.JSONDecodeError)
+        else "structured result parsing failed",
+        metadata,
+    )
+
+
+def _log_completion(session: InvestigationSession) -> None:
+    logger.info("Investigation complete host=%s trace=%s", session.target_host, session.trace())
+
+
 def _user_input(text: str) -> dict[str, object]:
     """Build an explicit Interactions API user step suitable for stateless replay."""
     return {"type": "user_input", "content": [{"type": "text", "text": text}]}
@@ -85,7 +134,8 @@ class InvestigationAgent:
             )
         try:
             result = InvestigationResult.model_validate_json(response.output_text)
-        except (ValidationError, ValueError):
+        except (ValidationError, ValueError) as exc:
+            _log_result_validation_failure(exc, response.output_text)
             session.stop_reason = StopReason.BOUND_REACHED
             return self._fallback_from_evidence(
                 session, summary="Geminiの最終分析を検証できませんでした。取得済み証拠を返します。",
@@ -190,8 +240,11 @@ class InvestigationAgent:
                     ]
                     if result.stop_reason is None:
                         result.stop_reason = StopReason.ANSWERABLE
+                    session.stop_reason = StopReason(result.stop_reason)
+                    _log_completion(session)
                     return result
-                except (ValidationError, ValueError):
+                except (ValidationError, ValueError) as exc:
+                    _log_result_validation_failure(exc, response.output_text)
                     return InvestigationResult(
                         summary="Geminiの構造化結論を検証できませんでした。",
                         findings=[item.summary for item in session.evidence],
@@ -229,9 +282,19 @@ class InvestigationAgent:
                     )
                     stop_execution = True
                     break
+                try:
+                    validated_arguments = HOST_READ_CAPABILITIES[
+                        call.name
+                    ].argument_model.model_validate(call.arguments).model_dump(mode="json")
+                except ValidationError:
+                    # Preserve INVALID_ARGUMENTS evidence while excluding arbitrary model payloads
+                    # from the structured trace.
+                    validated_arguments = None
                 output = self.functions.execute(call.name, call.arguments, host)
                 record = compact_evidence(call.name, output, max_chars=1800)
-                if not session.add(call.name, call.arguments, record):
+                if not session.add(
+                    call.name, call.arguments, record, trace_arguments=validated_arguments,
+                ):
                     final_reason = session.stop_reason or StopReason.BOUND_REACHED
                     self._append_executed_unretained_result(
                         inputs, call, "EVIDENCE_BOUND_REACHED",
@@ -260,7 +323,7 @@ class InvestigationAgent:
                 stop_reason=StopReason.BOUND_REACHED,
             )
         result = self._synthesize_from_evidence(session, inputs, final_reason)
-        logger.info("Investigation complete trace=%s", session.trace())
+        _log_completion(session)
         return result
 
     @staticmethod

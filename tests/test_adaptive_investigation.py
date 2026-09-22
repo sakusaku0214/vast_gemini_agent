@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from vast_agent.actions.capability_bridge import ground_capability_gap, request_for_gap
 from vast_agent.agent.evidence import compact_evidence
 from vast_agent.agent.functions import FunctionExecutor
@@ -7,6 +9,7 @@ from vast_agent.agent.gemini import ScriptedGeminiClient
 from vast_agent.agent.investigation_session import InvestigationSession, StopReason
 from vast_agent.agent.models import AgentResponse, CapabilityGap
 from vast_agent.agent.orchestrator import InvestigationAgent
+from vast_agent.agent.prompts import SYSTEM_PROMPT
 from vast_agent.config import GeminiSettings, HostRegistry
 from vast_agent.execution.base import FakeExecutor
 from vast_agent.models.tool_result import ToolResult
@@ -65,6 +68,116 @@ def test_two_different_reads_compose_and_stop_when_answerable(tmp_path, host):
     assert result.stop_reason == "ANSWERABLE"
     assert client.calls == 3
     assert remote.calls  # both composite backends gathered allowlisted evidence
+    assert agent.last_session.trace()["selected_calls"] == [
+        {"tool": "query_gpu_diagnostics", "arguments": {}},
+        {"tool": "query_docker_diagnostics", "arguments": {}},
+    ]
+    assert len(agent.last_session.tool_calls) == 2
+    assert "collect_evidence" not in agent.last_session.trace()["selected_tools"]
+    assert "get_recent_incidents" not in agent.last_session.trace()["selected_tools"]
+
+
+def test_typed_trace_arguments_omit_host_and_untrusted_evidence(tmp_path, host):
+    agent, _, _ = make_agent(tmp_path, host, [
+        call("collect_evidence", {
+            "host": host.name, "evidence_type": "kernel_gpu_errors",
+        }),
+        answer(),
+    ])
+
+    agent.investigate(host.name, "GPU診断の不足証拠を確認")
+
+    trace = agent.last_session.trace()
+    assert trace["selected_calls"] == [{
+        "tool": "collect_evidence", "arguments": {"evidence_type": "kernel_gpu_errors"},
+    }]
+    assert host.name not in json.dumps(trace)
+    assert "untrusted_evidence" not in json.dumps(trace)
+
+
+def test_degraded_specialized_read_can_have_relevant_follow_up(tmp_path, host):
+    agent, _, _ = make_agent(tmp_path, host, [
+        call("query_gpu_diagnostics", {"host": host.name}),
+        call("collect_evidence", {
+            "host": host.name, "evidence_type": "kernel_gpu_errors",
+        }, "2"),
+        answer("follow-up used"),
+    ])
+
+    result = agent.investigate(host.name, "GPUとDockerの状態")
+
+    assert result.summary == "follow-up used"
+    assert agent.last_session.trace()["selected_tools"] == [
+        "query_gpu_diagnostics", "collect_evidence",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [("recommended_action", "RESTART_NOW"), ("confidence", "certain")],
+)
+def test_final_synthesis_logs_safe_literal_validation_details(
+    tmp_path, host, caplog, field, invalid,
+):
+    payload = json.loads(answer().output_text)
+    payload[field] = invalid
+    raw_marker = "RAW_SECRET_MARKER"
+    payload["summary"] = raw_marker
+    agent, client, _ = make_agent(tmp_path, host, [
+        AgentResponse(output_text=json.dumps(payload)),
+    ])
+    session = InvestigationSession(target_host=host.name, goal="safe diagnostics")
+
+    with caplog.at_level("WARNING"):
+        result = agent._synthesize_from_evidence(
+            session, [_user_input_for_test("safe")], StopReason.BOUND_REACHED,
+        )
+
+    assert result.stop_reason == "BOUND_REACHED"
+    assert field in caplog.text
+    assert "literal_error" in caplog.text
+    assert raw_marker not in caplog.text
+    assert client.requests[-1]["tools"] == []
+
+
+@pytest.mark.parametrize("raw", ["{not valid JSON SECRET_BODY", "```json\n{}\n``` SECRET_BODY"])
+def test_final_synthesis_malformed_output_logs_only_shape(tmp_path, host, caplog, raw):
+    agent, _, _ = make_agent(tmp_path, host, [AgentResponse(output_text=raw)])
+    session = InvestigationSession(target_host=host.name, goal="safe diagnostics")
+
+    with caplog.at_level("WARNING"):
+        result = agent._synthesize_from_evidence(
+            session, [_user_input_for_test("safe")], StopReason.BOUND_REACHED,
+        )
+
+    assert result.stop_reason == "BOUND_REACHED"
+    assert "output_chars" in caplog.text
+    assert "starts_with_json_object" in caplog.text
+    assert "contains_code_fence" in caplog.text
+    assert "SECRET_BODY" not in caplog.text
+
+
+def test_planning_loop_logs_safe_structured_validation_details(tmp_path, host, caplog):
+    payload = json.loads(answer().output_text)
+    payload["confidence"] = "certain"
+    payload["summary"] = "PLANNING_RAW_SECRET"
+    agent, _, _ = make_agent(tmp_path, host, [
+        AgentResponse(output_text=json.dumps(payload)),
+    ])
+
+    with caplog.at_level("WARNING"):
+        result = agent.investigate(host.name, "現在の状態")
+
+    assert result.stop_reason == "ERROR"
+    assert "confidence" in caplog.text
+    assert "literal_error" in caplog.text
+    assert "PLANNING_RAW_SECRET" not in caplog.text
+
+
+def test_prompt_distinguishes_current_health_from_historical_relevance():
+    assert "by default for a current-state check" in SYSTEM_PROMPT
+    assert "explicitly asks about recent/history/instability" in SYSTEM_PROMPT
+    assert "specific evidence_type resolves an explicit uncertainty" in SYSTEM_PROMPT
 
 
 def test_answerable_after_first_read_does_not_call_more(tmp_path, host):
@@ -180,9 +293,9 @@ def test_evidence_bound_truthfully_replays_executed_and_pending_reads(
     ])
     original_add = InvestigationSession.add
 
-    def reject_for_evidence_bound(session, tool_name, arguments, evidence):
+    def reject_for_evidence_bound(session, tool_name, arguments, evidence, **kwargs):
         session.max_total_evidence_chars = 0
-        return original_add(session, tool_name, arguments, evidence)
+        return original_add(session, tool_name, arguments, evidence, **kwargs)
 
     monkeypatch.setattr(InvestigationSession, "add", reject_for_evidence_bound)
 
