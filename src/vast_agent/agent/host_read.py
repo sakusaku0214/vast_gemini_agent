@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from typing import Any, Final
 
 from pydantic import BaseModel
@@ -93,7 +93,7 @@ def _json(result: ToolResult) -> Any:
         return {"error": "PARSER_FAILED"}
 
 
-def _traffic_timestamp(row: dict[str, object]) -> datetime | None:
+def _traffic_timestamp(row: dict[str, object], timezone: tzinfo) -> datetime | None:
     date = row.get("date")
     if not isinstance(date, dict):
         return None
@@ -101,7 +101,7 @@ def _traffic_timestamp(row: dict[str, object]) -> datetime | None:
         hour = row.get("time") if isinstance(row.get("time"), dict) else {}
         return datetime(
             int(date["year"]), int(date["month"]), int(date["day"]),
-            int(hour.get("hour", 0)), int(hour.get("minute", 0)), tzinfo=UTC,
+            int(hour.get("hour", 0)), int(hour.get("minute", 0)), tzinfo=timezone,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -135,10 +135,23 @@ def _traffic_history(args: BaseModel, host: Host, remote: Executor) -> dict[str,
     rows = traffic.get("hour" if mode == "h" else "day") if isinstance(traffic, dict) else None
     if not isinstance(rows, list):
         return {"status": "error", "period": period, "interface": selected["name"], "source": "vnstat", "error": "UNSUPPORTED_JSON"}
-    now = datetime.now(UTC)
+    clock = _run(remote, "query_traffic_history:clock", host, ("date", "--iso-8601=seconds"))
+    if not clock.success:
+        return {"status": "error", "period": period, "interface": selected["name"],
+                "source": "vnstat", "error": "HOST_TIME_UNAVAILABLE"}
+    try:
+        value = clock.stdout.strip()
+        if len(value) > 64 or "\n" in value or "\r" in value:
+            raise ValueError
+        now = datetime.fromisoformat(value)
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError
+    except (ValueError, OverflowError):
+        return {"status": "error", "period": period, "interface": selected["name"],
+                "source": "vnstat", "error": "HOST_TIME_INVALID"}
     dated: list[tuple[datetime, dict[str, object]]] = []
     for row in rows:
-        if isinstance(row, dict) and (stamp := _traffic_timestamp(row)) is not None:
+        if isinstance(row, dict) and (stamp := _traffic_timestamp(row, now.tzinfo)) is not None:
             dated.append((stamp, row))
     if period == "today":
         chosen = [(stamp, row) for stamp, row in dated if stamp.date() == now.date()]
@@ -159,6 +172,22 @@ def _traffic_history(args: BaseModel, host: Host, remote: Executor) -> dict[str,
     return {"status": "available", "interface": selected["name"], "period": period,
             "rx_bytes": rx, "tx_bytes": tx, "total_bytes": rx + tx,
             "sample_start": min(stamps).isoformat(), "sample_end": max(stamps).isoformat(), "source": "vnstat"}
+
+
+def _temperature_celsius(value: object) -> float:
+    """Normalize nvme-cli's version-dependent Celsius/Kelvin temperature value.
+
+    Values above the plausible Celsius range are accepted only in a conservative Kelvin range.
+    Zero and ambiguous/out-of-range values fail closed instead of producing a misleading result.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("non-numeric temperature")
+    temperature = float(value)
+    if 0 < temperature <= 200:
+        return round(temperature, 2)
+    if 250 <= temperature <= 500:
+        return round(temperature - 273.15, 2)
+    raise ValueError("unsupported temperature value")
 
 
 def _nvme_health(args: BaseModel, host: Host, remote: Executor) -> dict[str, object]:
@@ -188,7 +217,7 @@ def _nvme_health(args: BaseModel, host: Host, remote: Executor) -> dict[str, obj
     try:
         raw = json.loads(smart.stdout)
         fields = {
-            "temperature_c": raw["temperature"],
+            "temperature_c": _temperature_celsius(raw["temperature"]),
             "available_spare_percent": raw["avail_spare"],
             "available_spare_threshold_percent": raw["spare_thresh"],
             "percentage_used": raw["percent_used"],
@@ -202,7 +231,7 @@ def _nvme_health(args: BaseModel, host: Host, remote: Executor) -> dict[str, obj
         }
         if any(isinstance(value, (dict, list, bool)) for value in fields.values()):
             raise TypeError
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return {"status": "error", "device": device, "error": "UNSUPPORTED_JSON"}
     return {"status": "available", "device": device, **fields}
 

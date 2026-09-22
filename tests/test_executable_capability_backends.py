@@ -20,7 +20,13 @@ from vast_agent.storage.database import Database
 def functions_for(tmp_path, host, results):
     database = Database(tmp_path / "backends.db")
     database.migrate()
-    remote = FakeExecutor(results)
+    fixtures = dict(results)
+    traffic = fixtures.get("query_traffic_history")
+    if traffic is not None and traffic.success:
+        fixtures.setdefault("query_traffic_history:clock", ToolResult(
+            success=True, stdout=datetime.now(UTC).isoformat(), duration_ms=1,
+        ))
+    remote = FakeExecutor(fixtures)
     functions = FunctionExecutor(
         HostRegistry(hosts={host.name: host}),
         InspectionService(database, tmp_path / "logs"), database, remote,
@@ -52,7 +58,7 @@ def test_yesterday_traffic_is_structured_in_bytes(tmp_path, host):
     assert result["status"] == "available"
     assert (result["rx_bytes"], result["tx_bytes"], result["total_bytes"]) == (100, 50, 150)
     assert result["interface"] == "eth0"
-    assert remote.calls == ["query_traffic_history"]
+    assert remote.calls == ["query_traffic_history", "query_traffic_history:clock"]
 
 
 def test_yesterday_without_a_sample_is_no_data_not_zero(tmp_path, host):
@@ -65,6 +71,72 @@ def test_yesterday_without_a_sample_is_no_data_not_zero(tmp_path, host):
     }, host.name))
     assert result["status"] == "no_data"
     assert "total_bytes" not in result
+
+
+@pytest.mark.parametrize(("period", "expected_rx"), [
+    ("today", 23),
+    ("yesterday", 22),
+    ("last_7d", sum(range(17, 24))),
+])
+def test_calendar_periods_use_host_local_date(tmp_path, host, period, expected_rx):
+    days = [datetime(2026, 9, day).date() for day in range(16, 24)]
+    payload = traffic_payload([{"name": "eth0", "traffic": {
+        "day": [vnstat_day(day, rx=day.day, tx=0) for day in days],
+    }}])
+    functions, _ = functions_for(tmp_path, host, {
+        "query_traffic_history": ToolResult(success=True, stdout=payload, duration_ms=1),
+        # At this instant UTC is still September 22; the host's local date is September 23.
+        "query_traffic_history:clock": ToolResult(
+            success=True, stdout="2026-09-23T01:00:00+09:00\n", duration_ms=1,
+        ),
+    })
+    result = evidence(functions.execute("query_traffic_history", {
+        "host": host.name, "period": period,
+    }, host.name))
+    assert result["status"] == "available"
+    assert result["rx_bytes"] == expected_rx
+
+
+def test_last_24h_interprets_hour_samples_in_host_timezone(tmp_path, host):
+    payload = traffic_payload([{"name": "eth0", "traffic": {"hour": [
+        {"date": {"year": 2026, "month": 9, "day": 22},
+         "time": {"hour": 0, "minute": 0}, "rx": 500, "tx": 500},
+        {"date": {"year": 2026, "month": 9, "day": 22},
+         "time": {"hour": 2, "minute": 0}, "rx": 100, "tx": 50},
+    ]}}])
+    functions, _ = functions_for(tmp_path, host, {
+        "query_traffic_history": ToolResult(success=True, stdout=payload, duration_ms=1),
+        "query_traffic_history:clock": ToolResult(
+            success=True, stdout="2026-09-23T01:00:00+09:00", duration_ms=1,
+        ),
+    })
+    result = evidence(functions.execute("query_traffic_history", {
+        "host": host.name, "period": "last_24h",
+    }, host.name))
+    assert result["status"] == "available"
+    assert (result["rx_bytes"], result["tx_bytes"]) == (100, 50)
+    assert result["sample_start"].endswith("+09:00")
+
+
+@pytest.mark.parametrize("clock", [
+    ToolResult(success=False, exit_code=1, duration_ms=1),
+    ToolResult(success=True, stdout="2026-09-23T01:00:00", duration_ms=1),
+    ToolResult(success=True, stdout="not-a-time", duration_ms=1),
+])
+def test_host_local_time_failure_has_no_utc_fallback(tmp_path, host, clock):
+    payload = traffic_payload([{"name": "eth0", "traffic": {"day": [
+        vnstat_day(datetime(2026, 9, 23).date()),
+    ]}}])
+    functions, remote = functions_for(tmp_path, host, {
+        "query_traffic_history": ToolResult(success=True, stdout=payload, duration_ms=1),
+        "query_traffic_history:clock": clock,
+    })
+    result = evidence(functions.execute("query_traffic_history", {
+        "host": host.name, "period": "today",
+    }, host.name))
+    assert result["status"] == "error"
+    assert "rx_bytes" not in result
+    assert remote.calls == ["query_traffic_history", "query_traffic_history:clock"]
 
 
 @pytest.mark.parametrize("tool_result, status", [
@@ -103,6 +175,8 @@ def test_traffic_interface_uses_code_owned_exact_argv(tmp_path, host):
 
         def execute(self, actual_host, command, timeout, cancellation=None):
             self.commands.append((tuple(command), timeout))
+            if command[0] == "date":
+                return ToolResult(success=True, stdout=datetime.now(UTC).isoformat(), duration_ms=1)
             return ToolResult(success=True, stdout=traffic_payload([
                 {"name": "eth1", "traffic": {"hour": []}},
             ]), duration_ms=1)
@@ -115,7 +189,10 @@ def test_traffic_interface_uses_code_owned_exact_argv(tmp_path, host):
     functions.execute("query_traffic_history", {
         "host": host.name, "period": "last_24h", "interface": "eth1",
     }, host.name)
-    assert remote.commands == [(('vnstat', '--json', 'h', '-i', 'eth1'), 15)]
+    assert remote.commands == [
+        (('vnstat', '--json', 'h', '-i', 'eth1'), 15),
+        (('date', '--iso-8601=seconds'), 15),
+    ]
     assert remote.commands[0][0][0] not in {"sh", "bash"}
 
 
@@ -148,9 +225,24 @@ def test_one_nvme_is_discovered_and_smart_fields_are_bounded(tmp_path, host):
     })
     result = evidence(functions.execute("query_nvme_health", {"host": host.name}, host.name))
     assert result["status"] == "available" and result["device"] == "/dev/nvme1"
+    assert result["temperature_c"] == pytest.approx(36.85)
     assert result["percentage_used"] == 3 and result["critical_warning"] == 0
     assert "serial" not in json.dumps(result).casefold()
     assert remote.calls == ["query_nvme_health:list", "query_nvme_health:smart"]
+
+
+@pytest.mark.parametrize("temperature", [0, "310", None, -1, 225, 501])
+def test_nvme_invalid_or_ambiguous_temperature_fails_closed(tmp_path, host, temperature):
+    payload = json.loads(smart_payload())
+    payload["temperature"] = temperature
+    functions, _ = functions_for(tmp_path, host, {
+        "query_nvme_health:smart": ToolResult(success=True, stdout=json.dumps(payload), duration_ms=1),
+    })
+    result = evidence(functions.execute("query_nvme_health", {
+        "host": host.name, "device": "nvme0",
+    }, host.name))
+    assert result["status"] == "error"
+    assert "temperature_c" not in result
 
 
 def test_multiple_nvme_devices_are_ambiguous(tmp_path, host):
