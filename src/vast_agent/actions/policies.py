@@ -47,6 +47,11 @@ class PolicyEngine:
             if state.running_vm or state.gpu_processes or state.active_workload: reasons.append("VM_MODE_CONFLICT")
         if request.action_type == ActionType.RESTART_LIBVIRT_SERVICE and state.running_vm:
             reasons.append("RUNNING_VM")
+        if request.action_type == ActionType.RESTART_VAST_SERVICE:
+            if state.active_workload:
+                reasons.append("VAST_RESTART_ACTIVE_WORKLOAD")
+            if state.running_vm:
+                reasons.append("VAST_RESTART_RUNNING_VM")
         if request.action_type == ActionType.HOST_REBOOT:
             if state.running_vm or state.active_workload: reasons.append("ACTIVE_WORKLOAD")
             if not state.filesystem_healthy: reasons.append("FILESYSTEM_UNHEALTHY")

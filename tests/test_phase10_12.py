@@ -181,6 +181,26 @@ def test_preflight_change_invalidates_without_write(tmp_path):
     assert db.get_action_proposal(proposal.id)["status"] == "INVALIDATED"
 
 
+@pytest.mark.parametrize(("changed", "reason"), [
+    ({"active_workload": True}, "VAST_RESTART_ACTIVE_WORKLOAD"),
+    ({"running_vm": True}, "VAST_RESTART_RUNNING_VM"),
+])
+def test_vast_workload_start_before_approval_invalidates_without_write(
+        tmp_path, changed, reason):
+    db, coordinator, remote = setup(tmp_path)
+    proposal = coordinator.propose(service_request(), "7")
+    assert proposal.status == "PENDING"
+    coordinator.preflight.state = coordinator.preflight.state.model_copy(update=changed)
+
+    assert coordinator.approve(
+        proposal.id, user_id=7, channel_id=9,
+    ) == (False, "PREFLIGHT_BLOCKED")
+    assert remote.calls == []
+    row = db.get_action_proposal(proposal.id)
+    assert row["status"] == "INVALIDATED"
+    assert reason in row["invalidated_reason"]
+
+
 def test_incomplete_evidence_is_blocked(tmp_path):
     state = PreflightSnapshot(ssh_reachable=True, sudo_available=True, target_exists=True,
                               evidence_complete=False)
@@ -454,7 +474,8 @@ def test_action_specific_evidence_ignores_unrelated_unsupported_capability():
     results = {
         "host_ping": ok(), "get_vast_status": ok("ActiveState=active"),
         "get_service_status": ok("Id=vastai.service\nActiveState=active"),
-        "get_system_health": ok("/ 10%"), "get_vm_status": unsupported,
+        "get_system_health": ok("/ 10%"), "get_docker_status": ok("active\n"),
+        "get_vm_status": unsupported,
     }
     observation = Observation(host="h", ssh_ok=True,
         system=SystemSummary(filesystem_max_percent=10), services={"vastai": "active"})
