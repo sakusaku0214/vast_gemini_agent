@@ -108,9 +108,8 @@ SQLiteの `token_usage` に保存します。`doctor` は設定/key有無だけ�
 ## Job cancellation semantics
 
 cancelはローカルの待機処理を止め、実行中SSH subprocessへterminateを送り、timeout時にはkillします。
-すでにremote側で開始した処理を巻き戻す意味ではありません。本Phaseのremote toolはすべてREAD ONLYで、
-restart、reboot、GPU reset、設定変更、任意shell、Approval実行は提供しません。これらの命令には
-「この操作はWRITE/Approval Phaseで対応予定」とだけ返します。
+すでにremote側で開始した処理を巻き戻す意味ではありません。Geminiへ公開するremote toolは引き続きすべてREAD ONLYです。Phase 10–12のrestart、reboot、
+GPU reset、VM modeは、下記の独立したtyped proposal/OWNER Approval経路だけから実行できます。
 
 ## Development
 
@@ -120,3 +119,34 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m pytest
 ```
+
+## Phase 10–12: approval-gated operations
+
+State-changing operations are **disabled by default**. They are separate from Gemini's read-only
+function registry: Gemini can analyze and recommend, but it cannot invoke an action. Enable the
+master switch explicitly in `agent.yaml` only after reviewing the host-specific access policy:
+
+```yaml
+operations:
+  enabled: false
+  approval_ttl_seconds: 600
+  action_timeout_seconds: 60
+  reboot_recovery_timeout_seconds: 300
+  reboot_poll_seconds: 10
+  enable_vms_script: null
+```
+
+A typed proposal and read-only preflight precede every operation. The configured OWNER must use the
+Approve button in the configured channel before a fresh preflight is compared with the proposal.
+Approvals expire, are atomic/single-use, and mean exactly one state-changing command. There is no
+retry, force/no-approval option, fleet write, action chaining, or arbitrary shell interface. A
+changed or newly unsafe preflight invalidates the approval. Restart, Vast `C.<digits>` container,
+GPU reset, and VM-mode targets are strictly typed and validated. `enable_vms_script` must be an
+explicit absolute remote POSIX path whose basename is `enable_vms.py`; null blocks VM actions.
+
+Writes require non-interactive `sudo -n`. Configure only the minimum action-specific `NOPASSWD`
+permissions needed by the deployment; **do not grant `NOPASSWD: ALL`**. This project does not edit
+sudoers. Reboot uses a separate down/up monitor. If SSH does not return before the configured
+recovery timeout, the agent stops and requests physical handling. It never attempts BMC, IPMI,
+smart-plug/power-cycle, shutdown, a second reboot, or another automatic repair. Command timeout is
+also never retried because the remote state may already have changed.

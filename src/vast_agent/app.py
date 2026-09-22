@@ -20,6 +20,7 @@ from vast_agent.config import (
     initialize_config,
     load_gemini_settings,
     load_hosts,
+    load_operations_settings,
     load_runtime_settings,
 )
 from vast_agent.conversation.state import ConversationStore
@@ -85,6 +86,8 @@ def doctor(paths: RuntimePaths) -> int:
     try: settings = load_gemini_settings(paths.agent_file); gemini_state = "OK"
     except ConfigError as exc: settings = None; gemini_state = f"ERROR: {exc}"
     checks.append(("Gemini config", "OK" if settings else "ERROR", gemini_state))
+    operations = load_operations_settings(paths.agent_file)
+    checks.append(("WRITE operations", "OK", "enabled" if operations.enabled else "disabled"))
     checks.append(("API key", "OK" if _api_key(paths) else "WARNING",
                    "configured" if _api_key(paths) else "not configured"))
     for label, state, detail in checks: print(f"{label:<22} {state:<7} {detail}")
@@ -216,7 +219,10 @@ def main(argv: list[str] | None = None) -> int:
             if detail: print(f"PID         {detail.get('pid')}\nStarted     {detail.get('started_at')}")
             print(f"Discord     {'configured' if all(secrets.get(k) for k in ('DISCORD_BOT_TOKEN','DISCORD_CHANNEL_ID','DISCORD_OWNER_USER_ID')) else 'not configured'}")
             print(f"Gemini      {'configured' if secrets.get('GEMINI_API_KEY') else 'not configured'}")
+            operations = load_operations_settings(paths.agent_file)
             print(f"Hosts       {len(registry.hosts)}\nJobs        {database.running_job_count()} running")
+            print(f"Operations  {'enabled' if operations.enabled else 'disabled'}")
+            print(f"Approvals   {database.pending_approval_count()} pending")
             return 0
         print(message); return 0 if ok else 2
     if args.command in {"update", "backup"}:

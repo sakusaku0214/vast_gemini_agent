@@ -14,7 +14,7 @@ from vast_agent.storage.database import Database
 
 def test_schema_observation_and_incident_dedup(tmp_path):
     database = Database(tmp_path / "agent.db")
-    assert database.migrate() == 3
+    assert database.migrate() == 4
     host = Host(name="node", address="192.0.2.2", ssh_user="user")
     database.upsert_host(host)
     assert database.save_observation(Observation(host="node", ssh_ok=True)) > 0

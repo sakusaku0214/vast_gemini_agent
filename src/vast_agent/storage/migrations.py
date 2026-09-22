@@ -48,4 +48,26 @@ MIGRATIONS: tuple[str, ...] = (
       PRIMARY KEY(owner_id, channel_id)
     );
     """,
+    """
+    CREATE TABLE action_proposals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT NOT NULL, action_type TEXT NOT NULL,
+      params_json TEXT NOT NULL, risk_class TEXT NOT NULL, status TEXT NOT NULL,
+      created_at TEXT NOT NULL, expires_at TEXT NOT NULL, created_by TEXT NOT NULL,
+      preflight_json TEXT NOT NULL, preflight_fingerprint TEXT NOT NULL, job_id INTEGER,
+      approved_at TEXT, approved_by TEXT, consumed_at TEXT, invalidated_reason TEXT
+    );
+    CREATE INDEX action_proposals_status_expiry ON action_proposals(status, expires_at);
+    CREATE TABLE action_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER NOT NULL UNIQUE, job_id INTEGER,
+      started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL, exit_code INTEGER,
+      error_code TEXT, verify_summary TEXT, point_of_no_return INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY(proposal_id) REFERENCES action_proposals(id)
+    );
+    CREATE TABLE action_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER NOT NULL, run_id INTEGER,
+      created_at TEXT NOT NULL, event TEXT NOT NULL, detail TEXT,
+      FOREIGN KEY(proposal_id) REFERENCES action_proposals(id),
+      FOREIGN KEY(run_id) REFERENCES action_runs(id)
+    );
+    """,
 )

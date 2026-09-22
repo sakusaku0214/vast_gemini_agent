@@ -18,3 +18,10 @@ jobs:
   max_recent_jobs: 20
 conversation:
   remember_last_host: true
+operations:
+  enabled: false
+  approval_ttl_seconds: 600
+  action_timeout_seconds: 60
+  reboot_recovery_timeout_seconds: 300
+  reboot_poll_seconds: 10
+  enable_vms_script: null
