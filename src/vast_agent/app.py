@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
 import json
+import logging
 import os
 import shutil
 import sys
@@ -13,11 +16,21 @@ from vast_agent.agent.models import Route
 from vast_agent.agent.orchestrator import InvestigationAgent
 from vast_agent.agent.prompts import SYSTEM_PROMPT
 from vast_agent.agent.router import route_intent
-from vast_agent.config import ConfigError, initialize_config, load_gemini_settings, load_hosts
+from vast_agent.config import (
+    ConfigError,
+    initialize_config,
+    load_gemini_settings,
+    load_hosts,
+    load_runtime_settings,
+)
+from vast_agent.conversation.state import ConversationStore
 from vast_agent.execution.ssh import SSHExecutor
 from vast_agent.inspector import GROUPS
+from vast_agent.jobs.manager import JobManager
 from vast_agent.migrate_v1 import migrate_v1
 from vast_agent.paths import RuntimePaths
+from vast_agent.runtime import RuntimeManager
+from vast_agent.services.agent_service import AgentService
 from vast_agent.services.inspection import InspectionService, load_redaction_secrets
 from vast_agent.storage.database import Database
 from vast_agent.tools.registry import run_tool
@@ -40,8 +53,9 @@ def parser() -> argparse.ArgumentParser:
     investigate = sub.add_parser("investigate"); investigate.add_argument("host"); investigate.add_argument("question")
     sub.add_parser("gemini-check")
     migrate = sub.add_parser("migrate-v1"); migrate.add_argument("path", type=Path)
-    for name in ("start", "stop", "restart", "status", "update", "backup"):
+    for name in ("start", "stop", "restart", "status", "update", "backup", "discord-check"):
         sub.add_parser(name)
+    run = sub.add_parser("run-discord"); run.add_argument("marker", nargs="?")
     return root
 
 
@@ -81,13 +95,19 @@ def doctor(paths: RuntimePaths) -> int:
 
 
 def _api_key(paths: RuntimePaths) -> str | None:
-    if os.environ.get("GEMINI_API_KEY"):
-        return os.environ["GEMINI_API_KEY"]
+    return _secrets(paths).get("GEMINI_API_KEY")
+
+
+def _secrets(paths: RuntimePaths) -> dict[str, str]:
+    values: dict[str, str] = {}
     if paths.secrets_file.exists():
         for line in paths.secrets_file.read_text(encoding="utf-8").splitlines():
-            if line.strip().startswith("GEMINI_API_KEY="):
-                return line.split("=", 1)[1].strip().strip("'\"") or None
-    return None
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1); values[key.strip()] = value.strip().strip("'\"")
+    for key in ("GEMINI_API_KEY", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID"):
+        if os.environ.get(key): values[key] = os.environ[key]
+    return values
 
 
 def _agent(paths: RuntimePaths, registry, executor):
@@ -101,6 +121,17 @@ def _agent(paths: RuntimePaths, registry, executor):
     )
     return InvestigationAgent(GoogleInteractionsClient(key, settings.api_version), functions,
                               database, settings)
+
+
+def _service(paths: RuntimePaths, registry, executor) -> AgentService:
+    database = Database(paths.database); database.migrate()
+    _, job_settings = load_runtime_settings(paths.agent_file)
+    inspection = InspectionService(database, paths.observation_logs,
+                                   load_redaction_secrets(paths.secrets_file))
+    return AgentService(registry, inspection, executor,
+                        JobManager(database, job_settings.max_recent_jobs),
+                        ConversationStore(database), _agent(paths, registry, executor),
+                        job_settings.max_parallel_hosts)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -130,37 +161,80 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, SyntaxError, ValueError, ConfigError) as exc:
             print(f"ERROR CONFIG_INVALID: {exc}", file=sys.stderr); return 2
         print(f"Migrated {count} host(s): {', '.join(names) if names else '(none)'}"); return 0
+    if args.command == "discord-check":
+        secrets = _secrets(paths)
+        for label, key in (("Bot token", "DISCORD_BOT_TOKEN"), ("Channel ID", "DISCORD_CHANNEL_ID"),
+                           ("Owner ID", "DISCORD_OWNER_USER_ID")):
+            print(f"{label:<15} {'configured' if secrets.get(key) else 'missing'}")
+        return 0 if all(secrets.get(k) for k in ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID")) else 2
     registry = _registry(paths)
     if registry is None: return 2
     if args.command == "hosts":
         for host in registry.hosts.values():
             print(f"{host.name:<24} {'enabled' if host.enabled else 'disabled':<8} {host.address}:{host.ssh_port}")
         return 0
-    if args.command in {"start", "stop", "restart", "status", "update", "backup"}:
-        print(f"ERROR: command '{args.command}' is not implemented in Phase 0-3", file=sys.stderr); return 3
+    if args.command in {"start", "stop", "restart", "status"}:
+        runtime = RuntimeManager(paths)
+        if args.command == "start":
+            required = ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID")
+            missing = [key for key in required if not _secrets(paths).get(key)]
+            if missing:
+                print("Discord configuration missing: " + ", ".join(missing), file=sys.stderr)
+                return 2
+            ok, message = runtime.start()
+        elif args.command == "stop": ok, message = runtime.stop()
+        elif args.command == "restart":
+            ok, message = runtime.stop()
+            if ok:
+                required = ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID")
+                missing = [key for key in required if not _secrets(paths).get(key)]
+                if missing:
+                    print("Discord configuration missing: " + ", ".join(missing), file=sys.stderr)
+                    return 2
+                ok, message = runtime.start()
+        else:
+            state, detail = runtime.status(); secrets = _secrets(paths)
+            database = Database(paths.database); database.migrate()
+            print("Vast Gemini Agent\n")
+            print(f"Status      {state}")
+            if detail: print(f"PID         {detail.get('pid')}\nStarted     {detail.get('started_at')}")
+            print(f"Discord     {'configured' if all(secrets.get(k) for k in ('DISCORD_BOT_TOKEN','DISCORD_CHANNEL_ID','DISCORD_OWNER_USER_ID')) else 'not configured'}")
+            print(f"Gemini      {'configured' if secrets.get('GEMINI_API_KEY') else 'not configured'}")
+            print(f"Hosts       {len(registry.hosts)}\nJobs        {database.running_job_count()} running")
+            return 0
+        print(message); return 0 if ok else 2
+    if args.command in {"update", "backup"}:
+        print(f"ERROR: command '{args.command}' is not implemented", file=sys.stderr); return 3
     executor = SSHExecutor(paths.known_hosts)
+    if args.command == "run-discord":
+        from vast_agent.discord_app.bot import create_bot
+
+        secrets = _secrets(paths); required = ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID")
+        missing = [key for key in required if not secrets.get(key)]
+        if missing:
+            print("Discord configuration missing: " + ", ".join(missing), file=sys.stderr); return 2
+        try: owner = int(secrets["DISCORD_OWNER_USER_ID"]); channel = int(secrets["DISCORD_CHANNEL_ID"])
+        except ValueError:
+            print("Discord channel and owner IDs must be integers.", file=sys.stderr); return 2
+        paths.create()
+        logging.basicConfig(filename=paths.agent_logs / "agent.log", level=logging.INFO,
+                            format="%(asctime)s %(levelname)s component=%(name)s %(message)s")
+        client = create_bot(owner, channel, _service(paths, registry, executor))
+        with contextlib.suppress(KeyboardInterrupt):
+            client.run(secrets["DISCORD_BOT_TOKEN"], reconnect=True, log_handler=None)
+        return 0
     if args.command == "ask":
         decision = route_intent(args.question, registry)
-        if decision.route == Route.UNSUPPORTED_WRITE:
-            print("Phase 6 is READ ONLY. この操作は将来のWRITE/Approval Phaseで扱います。"); return 3
         if decision.action == "list_hosts":
             print("\n".join(host.name for host in registry.hosts.values() if host.enabled)); return 0
-        if not decision.host:
-            print("ERROR HOST_NOT_FOUND_OR_AMBIGUOUS", file=sys.stderr); return 2
-        host = registry.resolve(decision.host)
-        if not host.enabled:
-            print(f"ERROR HOST_DISABLED: {host.name}", file=sys.stderr); return 2
-        if decision.route == Route.DETERMINISTIC:
-            record = InspectionService(Database(paths.database), paths.observation_logs,
-                                       load_redaction_secrets(paths.secrets_file)).inspect_and_record(
-                                           host, executor, decision.scope)
-            print(json.dumps(record.observation.model_dump(mode="json"), ensure_ascii=False, indent=2)); return 0
-        if decision.route == Route.AGENT:
-            agent = _agent(paths, registry, executor)
-            if agent is None:
-                print("Gemini unavailable: GEMINI_API_KEY is not configured."); return 2
-            print(agent.investigate(host.name, args.question).model_dump_json(indent=2)); return 0
-        print("要求を判定できませんでした。hostと調査内容を指定してください。"); return 2
+        if decision.host:
+            target = registry.resolve(decision.host)
+            if not target.enabled:
+                print(f"ERROR HOST_DISABLED: {target.name}", file=sys.stderr); return 2
+        reply = asyncio.run(_service(paths, registry, executor).handle_question(args.question))
+        print(reply.text)
+        if decision.route == Route.UNSUPPORTED_WRITE: return 3
+        return 0 if reply.job_id is not None else 2
     if args.command == "investigate":
         try: target = registry.resolve(args.host)
         except KeyError:

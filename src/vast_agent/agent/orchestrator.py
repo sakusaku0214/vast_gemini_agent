@@ -10,6 +10,7 @@ from vast_agent.agent.gemini import GeminiClient
 from vast_agent.agent.models import InvestigationResult
 from vast_agent.agent.prompts import SYSTEM_PROMPT
 from vast_agent.config import GeminiSettings
+from vast_agent.jobs.cancellation import current_cancellation
 from vast_agent.storage.database import Database
 
 
@@ -20,6 +21,7 @@ class InvestigationAgent:
 
     def investigate(self, host: str, question: str) -> InvestigationResult:
         start = time.monotonic(); tool_calls = 0; llm_calls = 0
+        cancellation = current_cancellation.get()
         evidence: list[str] = []
         inputs: list[dict[str, object]] = [{
             "type": "text",
@@ -28,6 +30,8 @@ class InvestigationAgent:
         while (llm_calls < self.settings.max_llm_calls
                and llm_calls < self.settings.max_agent_steps
                and time.monotonic() - start < self.settings.agent_wall_time_seconds):
+            if cancellation and cancellation.cancelled:
+                return InvestigationResult(summary="調査はキャンセルされました。", recommended_action="NONE")
             try:
                 response = self.client.interact(
                     model=self.settings.model, inputs=inputs, system_instruction=SYSTEM_PROMPT,
@@ -57,6 +61,8 @@ class InvestigationAgent:
             if not response.function_calls:
                 break
             for call in response.function_calls:
+                if cancellation and cancellation.cancelled:
+                    return InvestigationResult(summary="調査はキャンセルされました。", recommended_action="NONE")
                 if tool_calls >= self.settings.max_tool_calls:
                     return InvestigationResult(
                         summary="調査上限に達しました。現在得られている証拠を返します。",

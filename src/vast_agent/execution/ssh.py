@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from vast_agent.execution.base import redact
+from vast_agent.jobs.cancellation import CancellationToken
 from vast_agent.models.host import Host
 from vast_agent.models.tool_result import ErrorCode, ToolResult
 
@@ -15,7 +16,8 @@ class SSHExecutor:
         self.known_hosts = known_hosts.resolve()
         self.ssh_executable = ssh_executable
 
-    def execute(self, host: Host, command: Sequence[str], timeout: int) -> ToolResult:
+    def execute(self, host: Host, command: Sequence[str], timeout: int,
+                cancellation: CancellationToken | None = None) -> ToolResult:
         # The remote command consists only of tokens owned by registered tools.
         args = [
             self.ssh_executable,
@@ -31,9 +33,36 @@ class SSHExecutor:
         ]
         started = time.monotonic()
         try:
-            proc = subprocess.run(args, capture_output=True, timeout=timeout, check=False)
-            stdout = proc.stdout.decode("utf-8", errors="replace")
-            stderr = proc.stderr.decode("utf-8", errors="replace")
+            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            def terminate() -> None:
+                if proc.poll() is None:
+                    proc.terminate()
+            if cancellation:
+                cancellation.register(terminate)
+            try:
+                stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                terminate()
+                try: stdout_bytes, stderr_bytes = proc.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill(); stdout_bytes, stderr_bytes = proc.communicate()
+                return ToolResult(
+                    success=False, stdout=redact(_decode(stdout_bytes)),
+                    stderr=redact(_decode(stderr_bytes)),
+                    duration_ms=int((time.monotonic() - started) * 1000), timed_out=True,
+                    error_code=ErrorCode.SSH_TIMEOUT,
+                )
+            finally:
+                if cancellation:
+                    cancellation.unregister(terminate)
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+            if cancellation and cancellation.cancelled:
+                return ToolResult(
+                    success=False, exit_code=proc.returncode, stdout=redact(stdout),
+                    stderr=redact(stderr), duration_ms=int((time.monotonic() - started) * 1000),
+                    error_code=ErrorCode.CANCELLED,
+                )
             code = None
             low = stderr.lower()
             if "host key verification failed" in low:
@@ -46,12 +75,6 @@ class SSHExecutor:
                 success=proc.returncode == 0, exit_code=proc.returncode,
                 stdout=redact(stdout), stderr=redact(stderr),
                 duration_ms=int((time.monotonic() - started) * 1000), error_code=code,
-            )
-        except subprocess.TimeoutExpired as exc:
-            return ToolResult(
-                success=False, stdout=_decode(exc.stdout), stderr=_decode(exc.stderr),
-                duration_ms=int((time.monotonic() - started) * 1000), timed_out=True,
-                error_code=ErrorCode.SSH_TIMEOUT,
             )
         except OSError as exc:
             return ToolResult(

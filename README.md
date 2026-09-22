@@ -1,6 +1,6 @@
 # Vast Gemini Agent v2
 
-Windows 11からUbuntu/Vast.aiホストを安全に観測する、Phase 0〜6の **READ ONLY** 実装です。
+Windows 11からUbuntu/Vast.aiホストを安全に観測する、Phase 0〜9の **READ ONLY** 実装です。
 Geminiは調査にだけ使用し、任意shell、再起動、GPU reset、自動修復は含みません。
 
 ## Windows install
@@ -17,6 +17,40 @@ setup.cmd
 
 `config/examples/hosts.example.yaml` を参考に runtime の `config/hosts.yaml` を編集してください。
 example host は予約された文書用IPであり、初期runtimeにはコピーされません。
+
+## Discord を日常利用する
+
+基本的な導入順序は `setup.cmd` → secrets設定 → `trust-host` → `gemini-check` →
+`start` です。その後は指定したDiscord channelから自然文で利用できます。
+
+`%LOCALAPPDATA%\VastGeminiAgent\secrets\secrets.env` に次を設定してください。値はログ、
+status、Discord応答に表示されません。OWNERは1ユーザーだけで、指定channel内のOWNER本人による
+messageだけを受理します。BOT、webhook、他ユーザー、他channelは無視します。
+
+```dotenv
+DISCORD_BOT_TOKEN=your-bot-token
+DISCORD_CHANNEL_ID=your-channel-id
+DISCORD_OWNER_USER_ID=your-owner-user-id
+GEMINI_API_KEY=your-gemini-key
+```
+
+```powershell
+.\vast-agent.ps1 discord-check
+.\vast-agent.ps1 start
+.\vast-agent.ps1 status
+.\vast-agent.ps1 stop
+.\vast-agent.ps1 restart
+.\vast-agent.ps1 run-discord  # foreground / Ctrl+Cで停止
+```
+
+`start` は外部service managerなしでbackground processを起動し、agent logを
+`%LOCALAPPDATA%\VastGeminiAgent\logs\agent\agent.log` に保存します。PID stateに加えてprocessの
+command lineを検証するため、stale PIDや無関係なprocessは停止しません。
+
+自然文の例は `torrentのGPU温度`、`torrentなんかおかしくない？`、`ついでにPCIも`、
+`全台GPU状態見て`、`今の調査止めて`、`#184止めて`、`ジョブ見せて` です。明白な照会とfleetは
+Geminiを呼ばず、fleetは設定された上限（既定3 host）で並列実行します。conversation stateとjobは
+SQLiteへ小さなsummaryだけを保存し、再起動前に実行中だったjobは`INTERRUPTED`へ移行します。
 
 ## CLI
 
@@ -68,6 +102,13 @@ GEMINI_API_KEY=your-key-here
 自動昇格しません。各API callのpurpose/model/thinking levelと、APIが返したtoken count（nullable）を
 SQLiteの `token_usage` に保存します。`doctor` は設定/key有無だけを確認しAPIを呼びません。
 疎通確認はtoken消費を抑えた `gemini-check` を明示的に実行してください。
+
+## Job cancellation semantics
+
+cancelはローカルの待機処理を止め、実行中SSH subprocessへterminateを送り、timeout時にはkillします。
+すでにremote側で開始した処理を巻き戻す意味ではありません。本Phaseのremote toolはすべてREAD ONLYで、
+restart、reboot、GPU reset、設定変更、任意shell、Approval実行は提供しません。これらの命令には
+「この操作はWRITE/Approval Phaseで対応予定」とだけ返します。
 
 ## Development
 

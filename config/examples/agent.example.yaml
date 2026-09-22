@@ -11,3 +11,10 @@ gemini:
   investigate_thinking_level: medium
   allow_high_thinking: true
   store_interactions: false
+discord:
+  enabled: true
+jobs:
+  max_parallel_hosts: 3
+  max_recent_jobs: 20
+conversation:
+  remember_last_host: true

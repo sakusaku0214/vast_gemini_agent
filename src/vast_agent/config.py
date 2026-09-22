@@ -28,12 +28,32 @@ class GeminiSettings(BaseModel):
     agent_wall_time_seconds: int = 120
 
 
+class DiscordSettings(BaseModel):
+    enabled: bool = True
+
+
+class JobSettings(BaseModel):
+    max_parallel_hosts: int = 3
+    max_recent_jobs: int = 20
+
+
 def load_gemini_settings(path: Path) -> GeminiSettings:
     if not path.exists():
         return GeminiSettings()
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         return GeminiSettings.model_validate(raw.get("gemini", {}))
+    except (OSError, yaml.YAMLError, ValidationError, TypeError, AttributeError) as exc:
+        raise ConfigError(f"Invalid agent configuration: {exc}") from exc
+
+
+def load_runtime_settings(path: Path) -> tuple[DiscordSettings, JobSettings]:
+    if not path.exists():
+        return DiscordSettings(), JobSettings()
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return (DiscordSettings.model_validate(raw.get("discord", {})),
+                JobSettings.model_validate(raw.get("jobs", {})))
     except (OSError, yaml.YAMLError, ValidationError, TypeError, AttributeError) as exc:
         raise ConfigError(f"Invalid agent configuration: {exc}") from exc
 
@@ -80,7 +100,7 @@ def initialize_config(paths: RuntimePaths, examples: Path | None = None) -> None
     paths.create()
     defaults = {
         paths.hosts_file: "hosts: {}\n",
-        paths.agent_file: "ssh:\n  connect_timeout: 10\n  server_alive_interval: 5\n  server_alive_count_max: 2\ngemini:\n  model: gemini-3.8-flash\n  api_version: v1\n  default_thinking_level: low\n  investigate_thinking_level: medium\n  allow_high_thinking: true\n  store_interactions: false\n",
+        paths.agent_file: "ssh:\n  connect_timeout: 10\n  server_alive_interval: 5\n  server_alive_count_max: 2\ngemini:\n  model: gemini-3.8-flash\n  api_version: v1\n  default_thinking_level: low\n  investigate_thinking_level: medium\n  allow_high_thinking: true\n  store_interactions: false\ndiscord:\n  enabled: true\njobs:\n  max_parallel_hosts: 3\n  max_recent_jobs: 20\nconversation:\n  remember_last_host: true\n",
     }
     for target, content in defaults.items():
         if not target.exists():

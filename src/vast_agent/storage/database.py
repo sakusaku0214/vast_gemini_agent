@@ -5,6 +5,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from vast_agent.jobs.models import Job, JobStatus
 from vast_agent.models.host import Host
 from vast_agent.models.observation import Observation
 from vast_agent.models.tool_result import ToolResult
@@ -105,3 +106,71 @@ class Database:
                  *(usage.get(field) for field in fields)),
             )
             return int(cursor.lastrowid)
+
+    def reconcile_jobs(self) -> int:
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as db:
+            cursor = db.execute(
+                "UPDATE jobs SET status='INTERRUPTED',finished_at=?,error_code='PROCESS_RESTARTED' "
+                "WHERE status IN ('QUEUED','RUNNING','CANCELLING')", (now,),
+            )
+            return cursor.rowcount
+
+    def create_job(self, kind: str, host: str | None, request: str, created: datetime) -> int:
+        with self.connect() as db:
+            cursor = db.execute(
+                "INSERT INTO jobs(kind,host,status,created_at,request_summary) VALUES(?,?,?,?,?)",
+                (kind, host, "QUEUED", created.isoformat(), request),
+            )
+            return int(cursor.lastrowid)
+
+    def update_job(self, job: Job) -> None:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE jobs SET status=?,started_at=?,finished_at=?,result_summary=?,error_code=? WHERE id=?",
+                (job.status, job.started_at.isoformat() if job.started_at else None,
+                 job.finished_at.isoformat() if job.finished_at else None,
+                 job.result_summary, job.error_code, job.id),
+            )
+
+    def set_job_status(self, job_id: int, status: JobStatus) -> None:
+        with self.connect() as db:
+            db.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
+
+    def get_job(self, job_id: int) -> dict[str, object] | None:
+        with self.connect() as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def recent_jobs(self, limit: int = 20) -> list[dict[str, object]]:
+        with self.connect() as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def running_job_count(self) -> int:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('QUEUED','RUNNING','CANCELLING')",
+            ).fetchone()
+        return int(row[0])
+
+    def load_conversation(self, owner: str, channel: str) -> dict[str, object] | None:
+        with self.connect() as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT * FROM conversation_state WHERE owner_id=? AND channel_id=?",
+                (owner, channel),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_conversation(self, owner: str, channel: str, host: str | None,
+                          job_id: int | None, scope: str | None) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO conversation_state VALUES(?,?,?,?,?,?) ON CONFLICT(owner_id,channel_id) "
+                "DO UPDATE SET last_host=excluded.last_host,last_job_id=excluded.last_job_id,"
+                "last_scope=excluded.last_scope,updated_at=excluded.updated_at",
+                (owner, channel, host, job_id, scope, datetime.now(UTC).isoformat()),
+            )
