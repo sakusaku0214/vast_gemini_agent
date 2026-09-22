@@ -1,7 +1,7 @@
 # Vast Gemini Agent v2
 
-Windows 11からUbuntu/Vast.aiホストを安全に観測する、Phase 0〜3の **READ ONLY** 実装です。
-Gemini、Discord、任意shell、再起動、GPU reset、自動修復は含みません。
+Windows 11からUbuntu/Vast.aiホストを安全に観測する、Phase 0〜6の **READ ONLY** 実装です。
+Geminiは調査にだけ使用し、任意shell、再起動、GPU reset、自動修復は含みません。
 
 ## Windows install
 
@@ -28,6 +28,10 @@ example host は予約された文書用IPであり、初期runtimeにはコピ�
 .\vast-agent.ps1 trust-host HOST
 .\vast-agent.ps1 test-host HOST
 .\vast-agent.ps1 inspect HOST [--gpu|--pci|--vast|--docker|--vm] [--json]
+.\vast-agent.ps1 ask "garage-torrentのGPU温度"
+.\vast-agent.ps1 ask "garage-torrentなんかおかしくない？"
+.\vast-agent.ps1 investigate garage-torrent "GPUが消えた原因を調べて"
+.\vast-agent.ps1 gemini-check
 .\vast-agent.ps1 migrate-v1 D:\path\vast_gemini.py
 ```
 
@@ -45,6 +49,25 @@ example host は予約された文書用IPであり、初期runtimeにはコピ�
 * `read_config` は固定allowlistの1ファイルだけを対象とし、credential/private key/environmentを読みません。
 * raw出力はtyped Observationへ変換し、DB payloadはサイズを抑えます。大きなraw log用にはruntime logsとDB path列を用意しています。
 * SQLite migration、incident dedup key、FakeExecutorにより将来の拡張と実機不要テストを支えます。
+
+## Gemini investigation
+
+`%LOCALAPPDATA%\VastGeminiAgent\secrets\secrets.env` に次の1行を保存します（実際のkeyを
+READMEやログへ貼らないでください）。環境変数 `GEMINI_API_KEY` はこのファイルをoverrideします。
+
+```dotenv
+GEMINI_API_KEY=your-key-here
+```
+
+明白なGPU/PCI/Vast/Docker/VM/ディスク照会とホスト一覧はローカルで決定し、Geminiを0回で
+実行します。原因調査だけがInteractions APIのbounded function-calling loopへ進みます。
+公開functionは `inspect_host`、`collect_evidence`、`get_recent_incidents` のREAD ONLY 3個で、
+任意commandは受け付けません。interactionは `store=false` で、履歴はローカル側が保持します。
+
+通常判断はthinking `low`、調査は `medium` です。`high` は設定で許可できますが現Phaseでは
+自動昇格しません。各API callのpurpose/model/thinking levelと、APIが返したtoken count（nullable）を
+SQLiteの `token_usage` に保存します。`doctor` は設定/key有無だけを確認しAPIを呼びません。
+疎通確認はtoken消費を抑えた `gemini-check` を明示的に実行してください。
 
 ## Development
 

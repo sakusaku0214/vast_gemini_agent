@@ -4,3 +4,10 @@ ssh:
   server_alive_count_max: 2
 observation:
   raw_log_retention_days: 30
+gemini:
+  model: gemini-3.8-flash
+  api_version: v1
+  default_thinking_level: low
+  investigate_thinking_level: medium
+  allow_high_thinking: true
+  store_interactions: false

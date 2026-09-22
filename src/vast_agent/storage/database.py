@@ -79,3 +79,29 @@ class Database:
                 "VALUES(?,?,?,?,?,?,?,?)", (host, signature, now, now, "open", severity, summary, dedup),
             )
             return int(cursor.lastrowid)
+
+    def recent_incidents(self, host: str, signature: str | None, limit: int) -> list[dict[str, object]]:
+        sql = ("SELECT primary_signature,opened_at,last_seen_at,summary,status FROM incidents "
+               "WHERE host=?")
+        params: list[object] = [host]
+        if signature:
+            sql += " AND primary_signature=?"; params.append(signature)
+        sql += " ORDER BY last_seen_at DESC LIMIT ?"; params.append(min(max(limit, 1), 5))
+        with self.connect() as db:
+            rows = db.execute(sql, params).fetchall()
+        keys = ("signature", "opened_at", "last_seen_at", "summary", "status")
+        return [dict(zip(keys, row, strict=True)) for row in rows]
+
+    def save_token_usage(self, purpose: str, model: str, thinking_level: str,
+                         usage: dict[str, int | None]) -> int:
+        self.migrate()
+        fields = ("input_tokens", "output_tokens", "thought_tokens", "cached_tokens",
+                  "tool_use_tokens", "total_tokens")
+        with self.connect() as db:
+            cursor = db.execute(
+                "INSERT INTO token_usage(created_at,purpose,model,thinking_level,"
+                + ",".join(fields) + ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (datetime.now(UTC).isoformat(), purpose, model, thinking_level,
+                 *(usage.get(field) for field in fields)),
+            )
+            return int(cursor.lastrowid)
