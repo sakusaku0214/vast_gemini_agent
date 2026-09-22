@@ -9,6 +9,7 @@ from vast_agent.agent.orchestrator import InvestigationAgent
 from vast_agent.agent.router import route_intent
 from vast_agent.config import GeminiSettings, HostRegistry
 from vast_agent.execution.base import FakeExecutor
+from vast_agent.inspector import FULL, inspect_host
 from vast_agent.models.tool_result import ToolResult
 from vast_agent.services.inspection import InspectionService
 from vast_agent.storage.database import Database
@@ -200,3 +201,13 @@ def test_google_adapter_uses_official_interactions_steps_and_generation_config(m
     assert "thinking_level" not in captured
     assert response.steps == [Step().model_dump()]
     assert response.function_calls[0].call_id == "call-1"
+
+
+def test_full_inspection_runs_each_read_tool_once(host):
+    remote = FakeExecutor({
+        name: ToolResult(success=True, duration_ms=1)
+        for name in FULL
+    })
+    inspect_host(host, remote)
+    assert len(remote.calls) == len(set(remote.calls))
+    assert remote.calls == list(FULL)

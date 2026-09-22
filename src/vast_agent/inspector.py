@@ -12,9 +12,9 @@ GROUPS = {
     "vm": ("host_ping", "get_vm_status", "get_pci_status"),
     "system": ("host_ping", "get_system_health", "get_d_state_processes", "get_service_status"),
 }
-FULL = tuple(dict.fromkeys(tool for tools in GROUPS.values() for tool in tools)) + (
-    "get_system_health", "get_d_state_processes", "get_service_status", "get_journal_errors",
-)
+FULL = tuple(dict.fromkeys(
+    [tool for tools in GROUPS.values() for tool in tools] + ["get_journal_errors"],
+))
 
 
 def inspect_host(host: Host, executor: Executor, group: str | None = None) -> Observation:

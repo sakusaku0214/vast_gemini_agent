@@ -50,3 +50,22 @@ def test_disabled_host_is_rejected_by_ask_and_investigate(tmp_path, capsys, monk
     assert main(["--runtime", str(tmp_path), "investigate", "disabled-host", "原因を調べて"]) == 2
     assert fake.calls == []
     assert capsys.readouterr().err.count("HOST_DISABLED") == 2
+
+
+def test_gemini_check_uses_stateless_text_input(tmp_path, capsys, monkeypatch):
+    assert main(["--runtime", str(tmp_path), "install"]) == 0
+    captured = {}
+
+    class FakeGemini:
+        def __init__(self, api_key, api_version):
+            captured["config"] = (api_key, api_version)
+
+        def interact(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-only-key")
+    monkeypatch.setattr("vast_agent.app.GoogleInteractionsClient", FakeGemini)
+    assert main(["--runtime", str(tmp_path), "gemini-check"]) == 0
+    assert captured["inputs"] == [{"type": "text", "text": "Reply OK."}]
+    assert captured["store"] is False
+    assert "Interactions API OK" in capsys.readouterr().out
