@@ -28,6 +28,13 @@ def test_gpu_is_structured():
     assert observation.gpu.devices[0].vram_total_mb == 24576
 
 
+def test_normal_full_evidence_has_no_false_signatures():
+    observation = build_observation("test-host", fixture_results("normal"))
+    assert observation.gpu.nvml_observed and observation.gpu.pci_observed
+    assert observation.system.health_observed
+    assert observation.signatures == []
+
+
 @pytest.mark.parametrize(
     ("case", "gpu_driver", "audio_driver"),
     [
@@ -85,3 +92,53 @@ def test_binding_signatures_are_observed_but_vfio_is_not_implicitly_incident():
     assert "GPU_UNBOUND" in build_observation(
         "test-host", fixture_results("unbound_gpu"),
     ).signatures
+
+
+def test_gpu_only_marks_pci_unobserved_without_false_signatures():
+    results = fixture_results("normal")
+    observation = build_observation("test-host", {
+        "host_ping": results["host_ping"],
+        "get_gpu_status": results["get_gpu_status"],
+    })
+    assert observation.gpu.nvml_observed and observation.gpu.nvml_ok
+    assert not observation.gpu.pci_observed
+    assert "NVML_UNAVAILABLE" not in observation.signatures
+    assert "GPU_UNBOUND" not in observation.signatures
+
+
+def test_pci_only_marks_nvml_unobserved_without_false_signature():
+    results = fixture_results("normal")
+    observation = build_observation("test-host", {
+        "host_ping": results["host_ping"],
+        "get_pci_status": results["get_pci_status"],
+    })
+    assert observation.gpu.pci_observed and observation.gpu.pci_ok
+    assert not observation.gpu.nvml_observed
+    assert observation.gpu.pci_count == 1
+    assert "NVML_UNAVAILABLE" not in observation.signatures
+
+
+def test_executed_gpu_and_pci_failures_produce_only_supported_signatures():
+    results = fixture_results("normal")
+    failed_gpu = results["get_gpu_status"].model_copy(
+        update={"success": False, "stdout": "", "stderr": "nvidia-smi failed"},
+    )
+    assert "NVML_UNAVAILABLE" in build_observation("test-host", {
+        "host_ping": results["host_ping"], "get_gpu_status": failed_gpu,
+    }).signatures
+    assert "GPU_UNBOUND" in build_observation("test-host", {
+        "host_ping": results["host_ping"],
+        "get_pci_status": fixture_results("unbound_gpu")["get_pci_status"],
+    }).signatures
+
+
+def test_garage_torrent_lspci_grep_output_handles_separator_and_vendors():
+    from pathlib import Path
+
+    pci = parse_pci(Path("tests/fixtures/garage_torrent_lspci.txt").read_text(encoding="utf-8"))
+    assert pci["pci_count"] == 1
+    assert pci["nvidia_bound"] == 1
+    assert pci["unbound"] == 0
+    assert [(device.device_type, device.driver) for device in pci["pci_devices"]] == [
+        ("gpu", "nvidia"), ("audio", "snd_hda_intel"),
+    ]

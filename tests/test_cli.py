@@ -78,3 +78,34 @@ def test_start_respects_discord_disabled(tmp_path, capsys):
     )
     assert main(["--runtime", str(tmp_path), "start"]) == 2
     assert "disabled" in capsys.readouterr().err
+
+
+def test_cli_partial_gpu_and_pci_output_says_not_observed(tmp_path, capsys, monkeypatch):
+    assert main(["--runtime", str(tmp_path), "install"]) == 0
+    (tmp_path / "config" / "hosts.yaml").write_text(
+        "hosts:\n  test-host:\n    address: 192.0.2.20\n    ssh_user: tester\n"
+        "    capabilities:\n      nvidia: true\n",
+        encoding="utf-8",
+    )
+    gpu = ToolResult(
+        success=True,
+        stdout="0, GPU-x, Test, 42, 0, 0, 100, P8, 0000:01:00.0",
+        duration_ms=1,
+    )
+    pci = ToolResult(
+        success=True,
+        stdout=("0000:01:00.0 VGA compatible controller: NVIDIA Corporation Test "
+                "[10de:0001]\n\tKernel driver in use: nvidia"),
+        duration_ms=1,
+    )
+    fake = FakeExecutor({
+        "host_ping": ToolResult(success=True, duration_ms=1),
+        "get_gpu_status": gpu,
+        "get_pci_status": pci,
+    })
+    monkeypatch.setattr("vast_agent.app.SSHExecutor", lambda _: fake)
+
+    assert main(["--runtime", str(tmp_path), "inspect", "test-host", "--gpu"]) == 0
+    assert "PCI=not observed, NVML=OK" in capsys.readouterr().out
+    assert main(["--runtime", str(tmp_path), "inspect", "test-host", "--pci"]) == 0
+    assert "PCI=1, NVML=not observed" in capsys.readouterr().out

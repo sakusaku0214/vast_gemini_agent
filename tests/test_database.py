@@ -80,3 +80,16 @@ def test_offline_inspection_only_runs_ping_and_persists_failure(tmp_path, host):
         assert db.execute("SELECT count(*) FROM tool_runs").fetchone()[0] == 1
         assert db.execute("SELECT tool_name FROM tool_runs").fetchone()[0] == "host_ping"
         assert db.execute("SELECT count(*) FROM incidents").fetchone()[0] == 1
+
+
+def test_partial_inspection_does_not_open_incident_for_unobserved_evidence(tmp_path, host):
+    database = Database(tmp_path / "agent.db")
+    results = fixture_results("normal")
+    record = InspectionService(database, tmp_path / "logs").inspect_and_record(
+        host, FakeExecutor(results), "pci",
+    )
+    assert not record.observation.gpu.nvml_observed
+    assert "NVML_UNAVAILABLE" not in record.observation.signatures
+    assert record.incident_ids == {}
+    with sqlite3.connect(database.path) as db:
+        assert db.execute("SELECT count(*) FROM incidents").fetchone()[0] == 0

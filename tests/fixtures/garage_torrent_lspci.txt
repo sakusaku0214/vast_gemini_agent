@@ -1,0 +1,17 @@
+0000:01:00.0 VGA compatible controller [0300]: NVIDIA Corporation Device [10de:2684] (rev a1)
+	Subsystem: Gigabyte Technology Co., Ltd Device [1458:40bf]
+	Kernel driver in use: nvidia
+	Kernel modules: nouveau, nvidia_drm, nvidia
+0000:01:00.1 Audio device [0403]: NVIDIA Corporation Device [10de:22ba] (rev a1)
+	Subsystem: Gigabyte Technology Co., Ltd Device [1458:40bf]
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_hda_intel
+--
+0000:0a:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:164e] (rev c1)
+	Subsystem: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:164e]
+	Kernel driver in use: amdgpu
+	Kernel modules: amdgpu
+0000:0a:00.1 Audio device [0403]: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:1640]
+	Subsystem: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:1640]
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_hda_intel

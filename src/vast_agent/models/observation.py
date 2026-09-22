@@ -24,6 +24,10 @@ class PciDevice(BaseModel):
 
 
 class GpuSummary(BaseModel):
+    # Defaults keep observations written before observed-state tracking readable.
+    nvml_observed: bool = False
+    pci_observed: bool = False
+    pci_ok: bool = False
     pci_count: int = 0
     nvml_ok: bool = False
     nvml_error: str | None = None
@@ -36,6 +40,8 @@ class GpuSummary(BaseModel):
 
 
 class SystemSummary(BaseModel):
+    health_observed: bool = False
+    d_state_observed: bool = False
     d_state_processes: int = 0
     filesystem_max_percent: int | None = None
     failed_units: int = 0
@@ -45,8 +51,11 @@ class Observation(BaseModel):
     host: str
     observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     ssh_ok: bool
+    ssh_observed: bool = False
     gpu: GpuSummary = Field(default_factory=GpuSummary)
     system: SystemSummary = Field(default_factory=SystemSummary)
     services: dict[str, str] = Field(default_factory=dict)
+    services_observed: list[str] = Field(default_factory=list)
+    observed_tools: list[str] = Field(default_factory=list)
     signatures: list[str] = Field(default_factory=list)
     details: dict[str, object] = Field(default_factory=dict)

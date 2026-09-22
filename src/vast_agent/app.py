@@ -324,7 +324,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.json: print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
             print(f"Host: {host.name}\nSSH: {'OK' if observation.ssh_ok else 'ERROR'}")
-            print(f"GPU: PCI={observation.gpu.pci_count}, NVML={'OK' if observation.gpu.nvml_ok else 'unavailable'}, nvidia={observation.gpu.nvidia_bound}, vfio={observation.gpu.vfio_bound}, unbound={observation.gpu.unbound}")
+            pci = (str(observation.gpu.pci_count) if observation.gpu.pci_ok else
+                   "unavailable" if observation.gpu.pci_observed else "not observed")
+            nvml = ("OK" if observation.gpu.nvml_ok else "unavailable") if observation.gpu.nvml_observed else "not observed"
+            binding = (f"nvidia={observation.gpu.nvidia_bound}, vfio={observation.gpu.vfio_bound}, "
+                       f"unbound={observation.gpu.unbound}" if observation.gpu.pci_ok
+                       else "nvidia=not observed, vfio=not observed, unbound=not observed")
+            print(f"GPU: PCI={pci}, NVML={nvml}, {binding}")
             print("Services: " + (", ".join(f"{k}={v}" for k, v in observation.services.items()) or "none observed"))
             print("Signatures: " + (", ".join(observation.signatures) or "none"))
         return 0 if observation.ssh_ok else 2
