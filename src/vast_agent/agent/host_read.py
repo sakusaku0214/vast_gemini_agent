@@ -24,6 +24,7 @@ from vast_agent.agent.models import (
     ServiceQueryArgs,
     TrafficHistoryArgs,
 )
+from vast_agent.diagnostics.composite import docker_diagnostics, gpu_diagnostics
 from vast_agent.execution.base import Executor
 from vast_agent.models.host import Host
 from vast_agent.models.tool_result import ToolResult
@@ -60,6 +61,8 @@ HOST_READ_CAPABILITIES: Final[dict[str, HostReadCapability]] = {
         HostReadCapability("query_traffic_history", "Read bounded vnStat traffic history in bytes.", "network", TrafficHistoryArgs, "generic"),
         HostReadCapability("query_nvme_health", "Read selected NVMe SMART health fields.", "storage", NvmeHealthArgs, "generic"),
         HostReadCapability("query_process", "Check a process name; returns only count and a few PIDs.", "processes", ProcessQueryArgs, "generic"),
+        HostReadCapability("query_gpu_diagnostics", "Return bounded PCI, NVML, and known-signature GPU diagnostics.", "gpu", HostArgument, "diagnostic"),
+        HostReadCapability("query_docker_diagnostics", "Return bounded Docker service and container-state diagnostics.", "containers", HostArgument, "diagnostic", ("docker",)),
         HostReadCapability("inspect_os", "Read distribution, kernel, architecture, and uptime facts.", "system", HostArgument, "generic"),
         HostReadCapability("list_host_capabilities", "List registry READ capabilities available for this host.", "discovery", HostArgument, "discovery"),
     )
@@ -346,6 +349,14 @@ def execute_generic(name: str, args: BaseModel, host: Host, remote: Executor) ->
         facts.update({"kernel": kernel.stdout.strip() if kernel.success else None, "uptime": uptime.stdout.strip() if uptime.success else None})
         return facts
     return {"error": "FUNCTION_NOT_ALLOWED", "function": name}
+
+
+def execute_diagnostic(name: str, host: Host, remote: Executor) -> dict[str, object]:
+    if name == "query_gpu_diagnostics":
+        return gpu_diagnostics(host, remote).model_dump(mode="json")
+    if name == "query_docker_diagnostics":
+        return docker_diagnostics(host, remote).model_dump(mode="json")
+    return {"status": "error", "error": "FUNCTION_NOT_ALLOWED"}
 
 
 def discover(host: Host) -> dict[str, object]:

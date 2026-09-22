@@ -133,6 +133,18 @@ class CapabilityRegistry:
 
 CAPABILITY_DEFINITIONS = (
     CapabilityDefinition(
+        "gpu_diagnostics", "bounded GPU health and ownership diagnostics", "gpu",
+        ReadBackendDefinition("query_gpu_diagnostics"),
+        prerequisites=CapabilityPrerequisites(optional_host_capabilities=("nvidia",)),
+        safety_notes="READ-only PCI/NVML evidence; no reset or remediation is performed.",
+    ),
+    CapabilityDefinition(
+        "docker_diagnostics", "bounded Docker service and workload diagnostics", "containers",
+        ReadBackendDefinition("query_docker_diagnostics"),
+        prerequisites=CapabilityPrerequisites(required_host_capabilities=("docker",)),
+        safety_notes="READ-only service and container summaries; no container mutation is performed.",
+    ),
+    CapabilityDefinition(
         "traffic_history", "historical network traffic", "network",
         ReadBackendDefinition("query_traffic_history"),
         AcquisitionDefinition("vnstat", ("vnstat",), ("vnstat",), True, ServiceRequirement.ACTIVE),
