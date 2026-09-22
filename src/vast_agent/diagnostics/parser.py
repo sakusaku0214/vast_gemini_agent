@@ -126,6 +126,36 @@ def parse_service_show(text: str) -> dict[str, str]:
     }
 
 
+def summarize_docker_status(text: str) -> dict[str, int]:
+    """Summarize the canonical ``get_docker_status`` output without retaining rows."""
+    statuses = [
+        fields[2].strip().casefold()
+        for line in text.splitlines()[1:]
+        if len(fields := line.split("|", 3)) == 4
+    ]
+    running = sum(status.startswith(("up", "restarting")) for status in statuses)
+    return {"total": len(statuses), "running": running, "stopped": len(statuses) - running}
+
+
+def summarize_vm_status(text: str) -> dict[str, object]:
+    """Summarize virsh domain rows from ``get_vm_status`` output."""
+    known_states = {
+        "running", "idle", "paused", "shutdown", "shut off", "crashed", "pmsuspended",
+        "blocked",
+    }
+    domains: list[dict[str, str]] = []
+    for line in text.splitlines():
+        match = re.match(r"^\s*(?:-|\d+)\s+(\S+)\s+(.+?)\s*$", line)
+        if not match or match.group(2).casefold() not in known_states:
+            continue
+        domains.append({"name": match.group(1)[:80], "state": match.group(2).casefold()})
+    return {
+        "total": len(domains),
+        "running": sum(domain["state"] == "running" for domain in domains),
+        "domains": domains,
+    }
+
+
 def build_observation(
     host: str, results: dict[str, ToolResult], expected_gpu_count: int | None = None,
 ) -> Observation:
@@ -183,6 +213,8 @@ def build_observation(
                 ("kernel_gpu_errors", "get_kernel_gpu_errors"),
                 ("vast_logs", "get_vast_logs"),
                 ("journal_errors", "get_journal_errors"),
+                ("docker_status", "get_docker_status"),
+                ("vm_status", "get_vm_status"),
             )
             if tool in results
         },
