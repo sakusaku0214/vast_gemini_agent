@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from vast_agent.actions.capability_bridge import (
     AcquisitionIntent,
     acquisition_intent,
+    assess_gap,
     request_for_gap,
 )
 from vast_agent.actions.package_catalog import capability_definition
@@ -18,6 +19,7 @@ def gap(**updates) -> CapabilityGap:
     values = {
         "capability_id": "traffic_history",
         "status": "missing",
+        "software_status": "missing",
         "reason": "validated package and executable are absent",
         "evidence": ["vnstat package: not installed", "vnstat executable: missing"],
         "candidate_package": "curl",
@@ -44,8 +46,8 @@ def test_catalog_is_authoritative_over_model_candidate():
 
 
 @pytest.mark.parametrize("updates", [
-    {"status": "unknown"},
-    {"status": "available"},
+    {"status": "unknown", "software_status": "unknown"},
+    {"status": "available", "software_status": "available"},
     {"confidence": "low"},
 ])
 def test_unconfirmed_gap_cannot_create_action_request(updates):
@@ -82,6 +84,42 @@ def test_historical_caveat_is_code_owned_and_rendered():
     assert "導入前の通信履歴は取得できません" in rendered
     assert "Catalog候補: vnstat" in rendered
     assert "curl" not in rendered
+
+
+def test_installed_software_is_not_full_capability_without_registered_read_tool():
+    assessed = assess_gap(gap(status="available", software_status="available"))
+    assert assessed.status == "unknown"
+    assert "agent READ capability is not implemented" in assessed.reason
+    assert request_for_gap("garage-mag", assessed) is None
+
+
+def test_network_details_is_available_when_software_and_read_tool_exist():
+    assessed = assess_gap(gap(
+        capability_id="network_interface_details", status="unknown",
+        software_status="available", candidate_package="something-else",
+    ))
+    assert assessed.status == "available"
+    definition = capability_definition("network_interface_details")
+    assert definition is not None
+    assert definition.read_tool_name == "inspect_interface"
+    assert definition.agent_read_supported is True
+
+
+def test_installed_nvme_software_is_not_full_capability_or_install_candidate():
+    assessed = assess_gap(gap(
+        capability_id="nvme_health", status="available", software_status="available",
+    ))
+    assert assessed.status == "unknown"
+    assert request_for_gap("garage-mag", assessed) is None
+
+
+def test_software_missing_is_distinct_from_agent_read_support_missing():
+    software_missing = assess_gap(gap(software_status="missing"))
+    agent_read_missing = assess_gap(gap(status="available", software_status="available"))
+    assert software_missing.status == "missing"
+    assert request_for_gap("garage-mag", software_missing) is not None
+    assert agent_read_missing.status == "unknown"
+    assert request_for_gap("garage-mag", agent_read_missing) is None
 
 
 def test_gemini_declarations_remain_read_only():

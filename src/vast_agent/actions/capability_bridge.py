@@ -31,10 +31,12 @@ def acquisition_intent(text: str) -> AcquisitionIntent:
 
 def request_for_gap(host: str, gap: CapabilityGap) -> ActionRequest | None:
     """Bridge only confirmed, sufficiently confident catalog capabilities to typed writes."""
-    if gap.status != "missing" or gap.confidence not in {"medium", "high"}:
-        return None
     definition = capability_definition(gap.capability_id)
     if definition is None:
+        return None
+    assessed = assess_gap(gap)
+    if (assessed.status != "missing" or assessed.software_status != "missing"
+            or assessed.confidence not in {"medium", "high"}):
         return None
     return ActionRequest(
         host=host,
@@ -45,3 +47,21 @@ def request_for_gap(host: str, gap: CapabilityGap) -> ActionRequest | None:
             reason=f"{definition.description} capability is unavailable",
         ),
     )
+
+
+def assess_gap(gap: CapabilityGap) -> CapabilityGap:
+    """Apply code-owned execution support to the model's host-software observation.
+
+    ``available`` means the registered agent can achieve the goal, not merely that a package
+    exists. Model text and its proposed aggregate status never override catalog metadata.
+    """
+    definition = capability_definition(gap.capability_id)
+    if definition is None or gap.software_status == "unknown":
+        return gap.model_copy(update={"status": "unknown"})
+    if gap.software_status == "missing":
+        return gap.model_copy(update={"status": "missing"})
+    if definition.agent_read_supported:
+        return gap.model_copy(update={"status": "available"})
+    reason = gap.reason.rstrip(". ")
+    reason += "; host software exists but agent READ capability is not implemented"
+    return gap.model_copy(update={"status": "unknown", "reason": reason})

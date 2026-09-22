@@ -13,6 +13,8 @@ class CapabilityPackageDefinition:
     executables: tuple[str, ...]
     services: tuple[str, ...] = ()
     platforms: tuple[str, ...] = ("debian", "ubuntu")
+    read_tool_name: str | None = None
+    agent_read_supported: bool = False
     supports_history: bool = False
     history_requires_prior_collection: bool = False
     post_install_notes: str | None = None
@@ -27,6 +29,7 @@ CAPABILITY_PACKAGES = (
     ),
     CapabilityPackageDefinition(
         "network_interface_details", "network interface details", "ethtool", ("ethtool",),
+        read_tool_name="inspect_interface", agent_read_supported=True,
     ),
     CapabilityPackageDefinition(
         "nvme_health", "NVMe device health", "nvme-cli", ("nvme",),

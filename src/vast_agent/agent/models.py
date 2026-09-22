@@ -106,6 +106,7 @@ class CapabilityGap(BaseModel):
     model_config = ConfigDict(extra="forbid")
     capability_id: Literal["traffic_history", "network_interface_details", "nvme_health"]
     status: Literal["available", "missing", "unknown"]
+    software_status: Literal["available", "missing", "unknown"]
     reason: str = Field(max_length=500)
     evidence: list[str] = Field(default_factory=list, max_length=12)
     candidate_package: str | None = Field(default=None, max_length=128)

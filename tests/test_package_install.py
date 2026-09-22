@@ -312,6 +312,7 @@ class GapAgent:
             summary="traffic history check", confidence="high", recommended_action="NONE",
             capability_gaps=[CapabilityGap(
                 capability_id="traffic_history", status=self.status,
+                software_status=self.status,
                 reason="package and executable checked", evidence=[f"vnstat: {self.status}"],
                 candidate_package="curl", confidence="high",
             )],

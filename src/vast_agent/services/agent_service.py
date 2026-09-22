@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from vast_agent.actions.capability_bridge import (
     AcquisitionIntent,
     acquisition_intent,
+    assess_gap,
     request_for_gap,
 )
 from vast_agent.actions.models import (
@@ -422,6 +423,7 @@ class AgentService:
         signatures = "\n".join(f"• {item}" for item in result.signatures) or "• none"
         gaps = []
         for gap in getattr(result, "capability_gaps", []):
+            gap = assess_gap(gap)
             definition = capability_definition(gap.capability_id)
             if definition is None:
                 continue
