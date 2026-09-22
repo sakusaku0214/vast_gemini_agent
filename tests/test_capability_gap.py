@@ -8,10 +8,13 @@ from vast_agent.actions.capability_bridge import (
     AcquisitionIntent,
     acquisition_intent,
     assess_gap,
+    ground_capability_gap,
     request_for_gap,
 )
 from vast_agent.actions.package_catalog import capability_definition
+from vast_agent.agent.evidence import EvidenceRecord
 from vast_agent.agent.host_read import FUNCTION_DECLARATIONS
+from vast_agent.agent.investigation_session import InvestigationSession
 from vast_agent.agent.models import CapabilityGap, InvestigationResult
 from vast_agent.services.agent_service import AgentService
 
@@ -30,6 +33,19 @@ def gap(**updates) -> CapabilityGap:
     return CapabilityGap.model_validate(values)
 
 
+def grounded_gap(**updates) -> CapabilityGap:
+    session = InvestigationSession(target_host="garage-mag", goal="history")
+    session.add("query_package", {"host": "garage-mag", "package_name": "vnstat"}, EvidenceRecord(
+        source="query_package", status="available",
+        facts={"package": "vnstat", "installed": False},
+    ))
+    session.add("query_executable", {"host": "garage-mag", "executable_name": "vnstat"}, EvidenceRecord(
+        source="query_executable", status="available",
+        facts={"executable": "vnstat", "exists": False},
+    ))
+    return ground_capability_gap(gap(**updates), session)
+
+
 @pytest.mark.parametrize(("text", "expected"), [
     ("magの昨日の通信量見て", AcquisitionIntent.READ_ONLY),
     ("magの昨日の通信量見たい。必要なら入れて", AcquisitionIntent.PROPOSE_IF_NEEDED),
@@ -40,7 +56,7 @@ def test_acquisition_intent_is_separate_from_goal(text, expected):
 
 
 def test_catalog_is_authoritative_over_model_candidate():
-    request = request_for_gap("garage-mag", gap(candidate_package="curl"), consent=True)
+    request = request_for_gap("garage-mag", grounded_gap(candidate_package="curl"), consent=True)
     assert request is not None
     assert request.parameters.package_name == "vnstat"
     assert request.parameters.expected_capability == "traffic_history"
@@ -116,7 +132,7 @@ def test_installed_nvme_software_has_registered_backend_and_needs_no_install():
 
 
 def test_software_missing_is_distinct_from_agent_read_support_missing():
-    software_missing = assess_gap(gap(software_status="missing"))
+    software_missing = grounded_gap(software_status="missing")
     agent_read_missing = assess_gap(
         gap(status="available", software_status="available"),
         CapabilityBackendResolver(registry={}),

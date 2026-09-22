@@ -94,7 +94,8 @@ def test_active_missing_and_unknown_service_production_semantics():
     missing = assess_gap(traffic_gap("unknown", "missing"))
     assert missing.status == "missing"
     assert request_for_gap("host", missing) is None
-    assert request_for_gap("host", missing, consent=True) is not None
+    # Model status alone is not authoritative acquisition evidence.
+    assert request_for_gap("host", missing, consent=True) is None
     unknown = assess_gap(traffic_gap("unknown"))
     assert unknown.status == "unknown"
     assert request_for_gap("host", unknown) is None

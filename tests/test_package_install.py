@@ -321,7 +321,8 @@ class GapAgent:
 
 @pytest.mark.parametrize(("text", "status", "proposal_count"), [
     ("garage-magの昨日の通信量見て", "missing", 0),
-    ("garage-magの昨日の通信量見たい。必要なら入れて", "missing", 1),
+    # A stubbed model gap has no session READ evidence and must fail closed.
+    ("garage-magの昨日の通信量見たい。必要なら入れて", "missing", 0),
     ("garage-magの昨日の通信量見たい。必要なら入れて", "available", 0),
     ("garage-magの昨日の通信量見たい。必要なら入れて", "unknown", 0),
 ])

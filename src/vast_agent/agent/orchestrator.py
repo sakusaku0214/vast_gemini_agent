@@ -5,9 +5,12 @@ import time
 
 from pydantic import ValidationError
 
+from vast_agent.actions.capability_bridge import ground_capability_gap
+from vast_agent.agent.evidence import compact_evidence
 from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import GeminiClient
-from vast_agent.agent.host_read import FUNCTION_DECLARATIONS
+from vast_agent.agent.host_read import FUNCTION_DECLARATIONS, HOST_READ_CAPABILITIES
+from vast_agent.agent.investigation_session import InvestigationSession, StopReason
 from vast_agent.agent.models import InvestigationResult
 from vast_agent.agent.prompts import GENERAL_SYSTEM_PROMPT, SYSTEM_PROMPT
 from vast_agent.config import GeminiSettings
@@ -65,9 +68,15 @@ class InvestigationAgent:
         return "一般質問の処理上限に達したため、安全に終了しました。"
 
     def investigate(self, host: str, question: str) -> InvestigationResult:
-        start = time.monotonic(); tool_calls = 0; llm_calls = 0
+        start = time.monotonic(); llm_calls = 0
         cancellation = current_cancellation.get()
-        evidence: list[str] = []
+        session = InvestigationSession(
+            target_host=host, goal=question,
+            max_tool_calls=self.settings.max_tool_calls,
+            max_rounds=min(self.settings.max_agent_steps, self.settings.max_llm_calls),
+        )
+        # Request-local state is retained only for diagnostics/tests; it grants no execution rights.
+        self.last_session = session
         inputs: list[dict[str, object]] = [{
             "type": "text",
             "text": f"Target logical host: {host}\nInvestigation request: {question}",
@@ -76,7 +85,8 @@ class InvestigationAgent:
                and llm_calls < self.settings.max_agent_steps
                and time.monotonic() - start < self.settings.agent_wall_time_seconds):
             if cancellation and cancellation.cancelled:
-                return InvestigationResult(summary="調査はキャンセルされました。", recommended_action="NONE")
+                return InvestigationResult(summary="調査はキャンセルされました。", recommended_action="NONE",
+                                           stop_reason=StopReason.CANCELLED)
             try:
                 response = self.client.interact(
                     model=self.settings.model, inputs=inputs, system_instruction=SYSTEM_PROMPT,
@@ -86,8 +96,10 @@ class InvestigationAgent:
                 )
             except Exception:  # API boundary; deliberately do not expose credential-bearing details
                 return InvestigationResult(summary="Gemini unavailable. 取得済みObservationのみ表示します。",
-                                           findings=evidence, missing_evidence=["Gemini analysis"])
+                                           findings=[item.summary for item in session.evidence],
+                                           missing_evidence=["Gemini analysis"], stop_reason=StopReason.ERROR)
             llm_calls += 1
+            session.round = llm_calls
             self.database.save_token_usage("investigate", self.settings.model,
                                            self.settings.investigate_thinking_level, response.usage)
             # With store=false, every model-generated step (including thought steps) must
@@ -95,32 +107,66 @@ class InvestigationAgent:
             inputs.extend(response.steps)
             if response.output_text and not response.function_calls:
                 try:
-                    return InvestigationResult.model_validate_json(response.output_text)
+                    result = InvestigationResult.model_validate_json(response.output_text)
+                    result.capability_gaps = [
+                        ground_capability_gap(gap, session) for gap in result.capability_gaps
+                    ]
+                    if result.stop_reason is None:
+                        result.stop_reason = StopReason.ANSWERABLE
+                    return result
                 except (ValidationError, ValueError):
                     return InvestigationResult(
                         summary="Geminiの構造化結論を検証できませんでした。",
-                        findings=evidence,
+                        findings=[item.summary for item in session.evidence],
                         recommended_action="NONE",
                         missing_evidence=["valid structured final response"],
+                        stop_reason=StopReason.ERROR,
                     )
             if not response.function_calls:
                 break
             for call in response.function_calls:
                 if cancellation and cancellation.cancelled:
-                    return InvestigationResult(summary="調査はキャンセルされました。", recommended_action="NONE")
-                if tool_calls >= self.settings.max_tool_calls:
+                    return InvestigationResult(summary="調査はキャンセルされました。", recommended_action="NONE",
+                                               stop_reason=StopReason.CANCELLED)
+                if not session.can_call():
                     return InvestigationResult(
                         summary="調査上限に達しました。現在得られている証拠を返します。",
-                        findings=evidence,
+                        findings=[item.summary for item in session.evidence],
                         missing_evidence=["未処理の追加確認"],
+                        stop_reason=StopReason.BOUND_REACHED,
+                    )
+                if call.name not in HOST_READ_CAPABILITIES:
+                    return InvestigationResult(
+                        summary="未登録のREAD toolが選択されたため、安全に終了しました。",
+                        findings=[item.summary for item in session.evidence],
+                        missing_evidence=["registered READ tool"], recommended_action="NONE",
+                        stop_reason=StopReason.ERROR,
+                    )
+                if session.has_call(call.name, call.arguments):
+                    return InvestigationResult(
+                        summary="同一のREADを再実行せず、取得済み証拠で終了しました。",
+                        findings=[item.summary for item in session.evidence],
+                        missing_evidence=["追加の異なる証拠"], recommended_action="NONE",
+                        stop_reason=StopReason.NO_NEW_EVIDENCE,
                     )
                 output = self.functions.execute(call.name, call.arguments, host)
-                tool_calls += 1; evidence.append(f"{call.name}: {output}")
+                record = compact_evidence(call.name, output, max_chars=1800)
+                if not session.add(call.name, call.arguments, record):
+                    return InvestigationResult(
+                        summary="証拠コンテキストの上限に達したため、安全に終了しました。",
+                        findings=[item.summary for item in session.evidence],
+                        missing_evidence=["上限を超える追加証拠"], recommended_action="NONE",
+                        stop_reason=session.stop_reason or StopReason.BOUND_REACHED,
+                    )
                 inputs.append({
                     "type": "function_result", "name": call.name, "call_id": call.call_id,
-                    "result": [{"type": "text", "text": json.dumps(output, ensure_ascii=False)}],
+                    "result": [{"type": "text", "text": json.dumps({
+                        "untrusted_evidence_record": record.model_dump(mode="json"),
+                    }, ensure_ascii=False)}],
                 })
         return InvestigationResult(
             summary="調査上限に達しました。現在得られている証拠を返します。",
-            findings=evidence, missing_evidence=["追加で必要な確認は次回調査で実施してください"],
+            findings=[item.summary for item in session.evidence],
+            missing_evidence=["追加で必要な確認は次回調査で実施してください"],
+            stop_reason=StopReason.BOUND_REACHED,
         )

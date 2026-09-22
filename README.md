@@ -1,5 +1,24 @@
 # Vast Gemini Agent v2
 
+## Adaptive investigation architecture
+
+**Prefer composition over capability proliferation.** Ambiguous host diagnostics use a bounded,
+request-local investigation session. Gemini selects the smallest useful set of registry-generated
+READ functions, evaluates compact untrusted evidence, reuses exact-call results, and stops when the
+goal is answerable or a tool, round, evidence, or time bound is reached. The application validates
+every typed argument and fixes the target host; the planner has no shell, arbitrary executable,
+package-install, restart, reset, reboot, or other mutation function.
+
+A new high-level capability is appropriate only when dedicated backend semantics are required,
+state or acquisition semantics are special, or safe composition of existing READ tools is
+insufficient. Tool failure is `EVIDENCE_MISSING`, a registered backend unavailable in context is
+`TOOL_UNAVAILABLE`, and only an absent ability is `CAPABILITY_GAP`. Package acquisition remains in
+the existing application-owned, approval-gated bridge and is never performed by the planner.
+Model-reported software status is non-authoritative: the bridge can propose acquisition only after
+the same target-bound investigation session contains successful, typed package and executable READ
+evidence matching code-owned acquisition metadata. Missing, failed, cross-host, or contradictory
+evidence fails closed as unknown; an inactive service is degraded rather than package-missing.
+
 ## Safe capability acquisition
 
 `PACKAGE_INSTALL` is a dangerous, approval-gated typed action. It only accepts packages in the
