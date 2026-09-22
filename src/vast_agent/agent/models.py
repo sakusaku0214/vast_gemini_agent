@@ -83,6 +83,35 @@ class InterfaceInspectionArgs(HostArgument):
         return value
 
 
+class TrafficHistoryArgs(HostArgument):
+    period: Literal["today", "yesterday", "last_24h", "last_7d"]
+    interface: str | None = Field(
+        default=None, min_length=1, max_length=15,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+
+    @field_validator("interface")
+    @classmethod
+    def safe_interface(cls, value: str | None) -> str | None:
+        if value is not None and ".." in value:
+            raise ValueError("interface cannot contain '..'")
+        return value
+
+
+class NvmeHealthArgs(HostArgument):
+    device: str | None = Field(default=None, min_length=5, max_length=14)
+
+    @field_validator("device")
+    @classmethod
+    def canonical_device(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        name = value.removeprefix("/dev/")
+        if not name.startswith("nvme") or not name[4:].isdigit():
+            raise ValueError("device must be an NVMe controller such as nvme0")
+        return f"/dev/{name}"
+
+
 class ProcessQueryArgs(HostArgument):
     process_name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
 

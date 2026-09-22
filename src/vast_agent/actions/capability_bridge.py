@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from vast_agent.actions.capability_backends import CapabilityBackendResolver
 from vast_agent.actions.models import ActionRequest, ActionType, PackageInstallParameters
 from vast_agent.actions.package_catalog import capability_definition
 from vast_agent.agent.models import CapabilityGap
@@ -49,7 +50,7 @@ def request_for_gap(host: str, gap: CapabilityGap) -> ActionRequest | None:
     )
 
 
-def assess_gap(gap: CapabilityGap) -> CapabilityGap:
+def assess_gap(gap: CapabilityGap, resolver: CapabilityBackendResolver | None = None) -> CapabilityGap:
     """Apply code-owned execution support to the model's host-software observation.
 
     ``available`` means the registered agent can achieve the goal, not merely that a package
@@ -60,8 +61,8 @@ def assess_gap(gap: CapabilityGap) -> CapabilityGap:
         return gap.model_copy(update={"status": "unknown"})
     if gap.software_status == "missing":
         return gap.model_copy(update={"status": "missing"})
-    if definition.agent_read_supported:
+    if (resolver or CapabilityBackendResolver()).available(gap.capability_id):
         return gap.model_copy(update={"status": "available"})
     reason = gap.reason.rstrip(". ")
-    reason += "; host software exists but agent READ capability is not implemented"
+    reason += "; host software exists but a matching registered Agent READ backend is unavailable"
     return gap.model_copy(update={"status": "unknown", "reason": reason})

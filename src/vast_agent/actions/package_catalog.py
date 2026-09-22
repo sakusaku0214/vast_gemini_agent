@@ -23,6 +23,7 @@ class CapabilityPackageDefinition:
 CAPABILITY_PACKAGES = (
     CapabilityPackageDefinition(
         "traffic_history", "historical network traffic", "vnstat", ("vnstat",), ("vnstat",),
+        read_tool_name="query_traffic_history", agent_read_supported=True,
         supports_history=True,
         history_requires_prior_collection=True,
         post_install_notes="導入前の通信履歴は取得できません。今後の履歴を記録できます。",
@@ -33,6 +34,7 @@ CAPABILITY_PACKAGES = (
     ),
     CapabilityPackageDefinition(
         "nvme_health", "NVMe device health", "nvme-cli", ("nvme",),
+        read_tool_name="query_nvme_health", agent_read_supported=True,
     ),
 )
 

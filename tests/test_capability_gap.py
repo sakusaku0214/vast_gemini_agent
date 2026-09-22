@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from vast_agent.actions.capability_backends import CapabilityBackendResolver
 from vast_agent.actions.capability_bridge import (
     AcquisitionIntent,
     acquisition_intent,
@@ -86,10 +87,9 @@ def test_historical_caveat_is_code_owned_and_rendered():
     assert "curl" not in rendered
 
 
-def test_installed_software_is_not_full_capability_without_registered_read_tool():
+def test_installed_software_is_full_capability_with_registered_read_tool():
     assessed = assess_gap(gap(status="available", software_status="available"))
-    assert assessed.status == "unknown"
-    assert "agent READ capability is not implemented" in assessed.reason
+    assert assessed.status == "available"
     assert request_for_gap("garage-mag", assessed) is None
 
 
@@ -105,17 +105,20 @@ def test_network_details_is_available_when_software_and_read_tool_exist():
     assert definition.agent_read_supported is True
 
 
-def test_installed_nvme_software_is_not_full_capability_or_install_candidate():
+def test_installed_nvme_software_has_registered_backend_and_needs_no_install():
     assessed = assess_gap(gap(
         capability_id="nvme_health", status="available", software_status="available",
     ))
-    assert assessed.status == "unknown"
+    assert assessed.status == "available"
     assert request_for_gap("garage-mag", assessed) is None
 
 
 def test_software_missing_is_distinct_from_agent_read_support_missing():
     software_missing = assess_gap(gap(software_status="missing"))
-    agent_read_missing = assess_gap(gap(status="available", software_status="available"))
+    agent_read_missing = assess_gap(
+        gap(status="available", software_status="available"),
+        CapabilityBackendResolver(registry={}),
+    )
     assert software_missing.status == "missing"
     assert request_for_gap("garage-mag", software_missing) is not None
     assert agent_read_missing.status == "unknown"
