@@ -38,11 +38,6 @@ class ActionIntentResolver:
             definition = next(
                 (entry for entry in CAPABILITY_PACKAGES if entry.package_name in folded), None,
             )
-            if definition is None and any(term in folded for term in ("通信量", "traffic history")):
-                definition = next(
-                    entry for entry in CAPABILITY_PACKAGES
-                    if entry.capability_id == "traffic_history"
-                )
             if definition:
                 return ActionRequest(
                     host=host.name, action_type=ActionType.PACKAGE_INSTALL,
