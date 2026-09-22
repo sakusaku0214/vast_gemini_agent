@@ -105,7 +105,8 @@ class AgentService:
 
     @staticmethod
     def _is_cancel_request(text: str) -> bool:
-        return (text.startswith("!cancel")
+        return (text == "止めて"
+                or text.startswith("!cancel")
                 or bool(re.search(r"#\d+\s*止めて", text))
                 or bool(re.search(r"(?:今の調査|この調査|ジョブ)(?:を)?止めて", text)))
 

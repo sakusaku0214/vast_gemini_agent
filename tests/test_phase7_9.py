@@ -82,16 +82,30 @@ def test_job_persistence_cancel_and_reconcile(tmp_path):
     assert db.get_job(stale.id)["status"] == JobStatus.INTERRUPTED
 
 
-def test_write_stop_does_not_cancel_last_job(tmp_path):
+def test_bare_stop_cancels_last_job(tmp_path):
     db = Database(tmp_path / "db"); manager = JobManager(db)
     job, token = manager.create("investigate", "torrent", "調査"); manager.start(job)
     store = ConversationStore(db)
     state = store.get(1, 2); state.last_job_id = job.id; state.last_host = "torrent"; store.save(1, 2, state)
     service = AgentService(HostRegistry(hosts={}), object(), object(), manager, store)
-    reply = asyncio.run(service.handle_question("vastai止めて", 1, 2))
-    assert "WRITE/Approval" in reply.text
-    assert not token.cancelled
-    assert db.get_job(job.id)["status"] == JobStatus.RUNNING
+    reply = asyncio.run(service.handle_question("止めて", 1, 2))
+    assert reply.job_id == job.id and "cancellation requested" in reply.text
+    assert token.cancelled
+    assert db.get_job(job.id)["status"] == JobStatus.CANCELLING
+
+
+def test_write_stop_does_not_cancel_last_job(tmp_path):
+    for command in ("vastai止めて", "docker止めて"):
+        root = tmp_path / command
+        db = Database(root / "db"); manager = JobManager(db)
+        job, token = manager.create("investigate", "torrent", "調査"); manager.start(job)
+        store = ConversationStore(db)
+        state = store.get(1, 2); state.last_job_id = job.id; state.last_host = "torrent"; store.save(1, 2, state)
+        service = AgentService(HostRegistry(hosts={}), object(), object(), manager, store)
+        reply = asyncio.run(service.handle_question(command, 1, 2))
+        assert "WRITE/Approval" in reply.text
+        assert not token.cancelled
+        assert db.get_job(job.id)["status"] == JobStatus.RUNNING
 
 
 def test_host_coordination_serializes_heavy_but_not_different_hosts(tmp_path):
