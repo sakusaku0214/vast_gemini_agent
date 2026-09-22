@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Protocol
 
 from vast_agent.actions.models import (
@@ -24,6 +25,44 @@ def normalize_pci_bdf(value: str | None) -> str | None:
     match = re.search(r"(?:[0-9a-f]{4,8}:)?([0-9a-f]{2}:[0-9a-f]{2}\.[0-7])$",
                       value.strip(), re.I)
     return match.group(1).lower() if match else None
+
+
+@dataclass(frozen=True)
+class DockerWorkloadSummary:
+    """Conservative interpretation of ``get_docker_status`` container rows."""
+
+    total_containers: int
+    running_containers: int
+    unknown_containers: int
+
+    @property
+    def has_active_workload(self) -> bool:
+        # An unrecognized row must never be interpreted as an idle host.
+        return self.running_containers > 0 or self.unknown_containers > 0
+
+
+def docker_workload_summary(output: str) -> DockerWorkloadSummary:
+    """Summarize Docker rows while treating malformed/unknown states as active."""
+    lines = output.splitlines()
+    rows = [line for line in lines[1:] if line.strip()]
+    running = 0
+    # The first line is the systemctl state and is required to delimit the rows.
+    unknown = int(not lines or not lines[0].strip() or "|" in lines[0])
+    for row in rows:
+        fields = row.split("|", 3)
+        if len(fields) != 4 or not all(field.strip() for field in fields):
+            unknown += 1
+            continue
+        status = fields[2].strip()
+        if status.startswith(("Up ", "Restarting")):
+            running += 1
+        elif not status.startswith(("Exited", "Created", "Dead")):
+            unknown += 1
+    return DockerWorkloadSummary(
+        total_containers=len(rows),
+        running_containers=running,
+        unknown_containers=unknown,
+    )
 
 
 class PreflightProvider(Protocol):
@@ -80,8 +119,9 @@ class ProductionPreflightProvider:
             elif mapping and observation.gpu.nvidia_bound == len(gpu_devices): gpu_binding = "nvidia"
             else: gpu_binding = "unknown"
         docker = results.get("get_docker_status")
-        docker_lines = docker.stdout.splitlines() if docker and docker.success else []
-        containers = [line for line in docker_lines[1:] if line.strip()]
+        docker_summary = docker_workload_summary(docker.stdout) if docker and docker.success else (
+            DockerWorkloadSummary(0, 0, 0)
+        )
         vm = results.get("get_vm_status")
         vm_text = vm.stdout if vm and vm.success else ""
         running_vm = bool(re.search(r"\brunning\b|qemu-system", vm_text, re.I))
@@ -90,7 +130,9 @@ class ProductionPreflightProvider:
             "service_state": current,
             "failed_units": observation.system.failed_units,
             "filesystem_max_percent": filesystem,
-            "docker_containers": len(containers),
+            "docker_total_containers": docker_summary.total_containers,
+            "docker_running_containers": docker_summary.running_containers,
+            "docker_unknown_containers": docker_summary.unknown_containers,
             "required_tools": ",".join(sorted(required_tools)),
             "evidence_complete": evidence_complete,
         }
@@ -100,7 +142,7 @@ class ProductionPreflightProvider:
             target_exists=target_exists,
             evidence_complete=evidence_complete,
             current_state=current,
-            active_workload=bool(containers), running_vm=running_vm,
+            active_workload=docker_summary.has_active_workload, running_vm=running_vm,
             d_state=observation.system.d_state_processes > 0,
             filesystem_healthy=filesystem is not None and filesystem < 95,
             gpu_mapping_resolved=mapping, gpu_binding=gpu_binding,
@@ -126,7 +168,12 @@ class ProductionPreflightProvider:
         common = {"host_ping"}
         action = request.action_type
         if action == ActionType.RESTART_VAST_SERVICE:
-            return common | {"get_vast_status", "get_service_status", "get_system_health"}
+            required = common | {"get_vast_status", "get_service_status", "get_system_health"}
+            if host.capabilities.docker:
+                required.add("get_docker_status")
+            if host.capabilities.libvirt:
+                required.add("get_vm_status")
+            return required
         if action == ActionType.RESTART_DOCKER_SERVICE:
             return common | {"get_service_status", "get_docker_status"}
         if action == ActionType.RESTART_LIBVIRT_SERVICE:
