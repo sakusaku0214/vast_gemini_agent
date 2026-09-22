@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from pydantic import ValidationError
@@ -18,6 +19,13 @@ from vast_agent.external_tools.registry import GeneralToolRegistry
 from vast_agent.jobs.cancellation import current_cancellation
 from vast_agent.storage.database import Database
 
+logger = logging.getLogger(__name__)
+
+
+def _user_input(text: str) -> dict[str, object]:
+    """Build an explicit Interactions API user step suitable for stateless replay."""
+    return {"type": "user_input", "content": [{"type": "text", "text": text}]}
+
 
 class InvestigationAgent:
     def __init__(self, client: GeminiClient, functions: FunctionExecutor, database: Database,
@@ -28,7 +36,7 @@ class InvestigationAgent:
     def answer_general(self, question: str) -> str:
         """Run a bounded general loop exposing only the separate general READ registry."""
         start = time.monotonic(); tool_calls = 0; llm_calls = 0
-        inputs: list[dict[str, object]] = [{"type": "text", "text": question}]
+        inputs: list[dict[str, object]] = [_user_input(question)]
         declarations = self.general_tools.declarations if self.general_tools else []
         while (llm_calls < self.settings.max_llm_calls
                and llm_calls < self.settings.max_agent_steps
@@ -41,6 +49,7 @@ class InvestigationAgent:
                     store=self.settings.store_interactions,
                 )
             except Exception:  # API boundary; never expose provider or credential details
+                logger.exception("Gemini general call failed")
                 return "Gemini unavailable. 一般質問に回答できません。"
             llm_calls += 1
             self.database.save_token_usage(
@@ -77,10 +86,9 @@ class InvestigationAgent:
         )
         # Request-local state is retained only for diagnostics/tests; it grants no execution rights.
         self.last_session = session
-        inputs: list[dict[str, object]] = [{
-            "type": "text",
-            "text": f"Target logical host: {host}\nInvestigation request: {question}",
-        }]
+        inputs: list[dict[str, object]] = [_user_input(
+            f"Target logical host: {host}\nInvestigation request: {question}"
+        )]
         while (llm_calls < self.settings.max_llm_calls
                and llm_calls < self.settings.max_agent_steps
                and time.monotonic() - start < self.settings.agent_wall_time_seconds):
@@ -95,6 +103,7 @@ class InvestigationAgent:
                     store=self.settings.store_interactions,
                 )
             except Exception:  # API boundary; deliberately do not expose credential-bearing details
+                logger.exception("Gemini investigate call failed")
                 return InvestigationResult(summary="Gemini unavailable. 取得済みObservationのみ表示します。",
                                            findings=[item.summary for item in session.evidence],
                                            missing_evidence=["Gemini analysis"], stop_reason=StopReason.ERROR)

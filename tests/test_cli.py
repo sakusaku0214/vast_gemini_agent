@@ -66,7 +66,9 @@ def test_gemini_check_uses_stateless_text_input(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-only-key")
     monkeypatch.setattr("vast_agent.app.GoogleInteractionsClient", FakeGemini)
     assert main(["--runtime", str(tmp_path), "gemini-check"]) == 0
-    assert captured["inputs"] == [{"type": "text", "text": "Reply OK."}]
+    assert captured["inputs"] == [{
+        "type": "user_input", "content": [{"type": "text", "text": "Reply OK."}],
+    }]
     assert captured["store"] is False
     assert "Interactions API OK" in capsys.readouterr().out
 
@@ -78,6 +80,43 @@ def test_start_respects_discord_disabled(tmp_path, capsys):
     )
     assert main(["--runtime", str(tmp_path), "start"]) == 2
     assert "disabled" in capsys.readouterr().err
+
+
+def test_restart_starts_after_successful_fallback_stop(tmp_path, monkeypatch):
+    assert main(["--runtime", str(tmp_path), "install"]) == 0
+    for key in ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID"):
+        monkeypatch.setenv(key, "configured")
+    calls = []
+
+    class Runtime:
+        def stop(self):
+            calls.append("stop")
+            return True, "stopped"
+
+        def start(self):
+            calls.append("start")
+            return True, "started"
+
+    monkeypatch.setattr("vast_agent.app.RuntimeManager", lambda _: Runtime())
+    assert main(["--runtime", str(tmp_path), "restart"]) == 0
+    assert calls == ["stop", "start"]
+
+
+def test_restart_does_not_start_after_unsafe_identity_mismatch(tmp_path, monkeypatch):
+    assert main(["--runtime", str(tmp_path), "install"]) == 0
+    calls = []
+
+    class Runtime:
+        def stop(self):
+            calls.append("stop")
+            return False, "stale PID; refusing to terminate"
+
+        def start(self):
+            raise AssertionError("unsafe restart must not start a second process")
+
+    monkeypatch.setattr("vast_agent.app.RuntimeManager", lambda _: Runtime())
+    assert main(["--runtime", str(tmp_path), "restart"]) == 2
+    assert calls == ["stop"]
 
 
 def test_cli_gpu_includes_pci_while_pci_only_says_nvml_not_observed(

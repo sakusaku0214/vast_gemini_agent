@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 from vast_agent.agent.functions import FUNCTION_DECLARATIONS
@@ -97,7 +98,22 @@ def test_weather_tool_loop_and_untrusted_result(tmp_path):
                                            AgentResponse(output_text="岡山は20度です。")], weather=weather)
     assert agent.answer_general("岡山の天気は？") == "岡山は20度です。"
     assert weather.calls == [("岡山", 1)]
+    assert client.requests[0]["inputs"][0] == {
+        "type": "user_input",
+        "content": [{"type": "text", "text": "岡山の天気は？"}],
+    }
     assert "untrusted_tool_result" in str(client.requests[1]["inputs"])
+
+
+def test_general_provider_failure_is_logged_but_not_exposed(tmp_path, caplog):
+    agent, _ = make_agent(tmp_path, [RuntimeError("provider-token-123")])
+    with caplog.at_level(logging.ERROR, logger="vast_agent.agent.orchestrator"):
+        answer = agent.answer_general("質問")
+
+    assert answer == "Gemini unavailable. 一般質問に回答できません。"
+    assert "provider-token-123" not in answer
+    record = next(record for record in caplog.records if "general call failed" in record.message)
+    assert record.exc_info and record.exc_info[0] is RuntimeError
 
 
 def test_missing_and_default_weather_location(tmp_path):

@@ -202,6 +202,7 @@ def test_runtime_duplicate_and_stale_pid_safety(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "status", lambda: ("RUNNING", {"pid": 123}))
     assert runtime.start() == (False, "already running")
     monkeypatch.setattr(runtime, "status", lambda: ("STOPPED / stale pid", {"pid": 123}))
+    monkeypatch.setattr(runtime, "_process_exists", lambda _: True)
     ok, detail = runtime.stop()
     assert not ok and "refusing" in detail
 
