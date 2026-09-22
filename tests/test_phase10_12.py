@@ -505,7 +505,7 @@ def test_vm_disable_tolerates_only_all_vfio_gpu_process_failure():
     def ok(stdout=""):
         return ToolResult(success=True, stdout=stdout, duration_ms=1)
 
-    def collect(case, action_type):
+    def collect(case, action_type, expected_gpu_count=1):
         results = fixture_results(case)
         if case == "mixed_binding":
             results["get_pci_status"] = results["get_pci_status"].model_copy(update={
@@ -521,7 +521,7 @@ def test_vm_disable_tolerates_only_all_vfio_gpu_process_failure():
             ),
             "get_d_state_processes": ok("S 1 init"),
         })
-        observation = build_observation("h", results)
+        observation = build_observation("h", results, expected_gpu_count)
 
         class Inspection:
             def inspect_and_record(self, host, executor):
@@ -537,18 +537,29 @@ def test_vm_disable_tolerates_only_all_vfio_gpu_process_failure():
             host="h", action_type=action_type,
             parameters=VMParameters(mode="off" if action_type == ActionType.VM_MODE_DISABLE else "on"),
         )
-        return provider.collect(Host(name="h", address="192.0.2.8", ssh_user="a"), request)
+        host = Host(
+            name="h", address="192.0.2.8", ssh_user="a",
+            expected_gpu_count=expected_gpu_count,
+        )
+        return provider.collect(host, request)
 
     disabled = collect("full_vfio", ActionType.VM_MODE_DISABLE)
     assert disabled.evidence_complete
     assert disabled.gpu_present
     assert disabled.gpu_mapping_resolved and disabled.gpu_binding == "vfio"
 
+    assert not collect(
+        "full_vfio", ActionType.VM_MODE_DISABLE, expected_gpu_count=2,
+    ).evidence_complete
+    assert not collect(
+        "full_vfio", ActionType.VM_MODE_DISABLE, expected_gpu_count=None,
+    ).evidence_complete
+
     # The same NVIDIA process evidence failure must remain fatal for enabling VM mode.
     assert not collect("full_vfio", ActionType.VM_MODE_ENABLE).evidence_complete
 
     # Mixed ownership is never treated as the all-VFIO exception.
-    mixed = collect("mixed_binding", ActionType.VM_MODE_DISABLE)
+    mixed = collect("mixed_binding", ActionType.VM_MODE_DISABLE, expected_gpu_count=2)
     assert not mixed.evidence_complete
     assert mixed.gpu_mapping_resolved and mixed.gpu_binding == "unknown"
     from vast_agent.actions.policies import PolicyDecision, PolicyEngine

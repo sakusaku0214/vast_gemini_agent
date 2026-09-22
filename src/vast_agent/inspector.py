@@ -22,4 +22,8 @@ FULL = tuple(dict.fromkeys(
 
 def inspect_host(host: Host, executor: Executor, group: str | None = None) -> Observation:
     names = GROUPS[group] if group else FULL
-    return build_observation(host.name, {name: run_tool(name, host, executor) for name in names})
+    return build_observation(
+        host.name,
+        {name: run_tool(name, host, executor) for name in names},
+        host.expected_gpu_count,
+    )

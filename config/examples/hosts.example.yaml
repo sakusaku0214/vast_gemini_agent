@@ -4,6 +4,8 @@ hosts:
     address: 192.0.2.10
     ssh_user: operator
     ssh_port: 22
+    # Required to treat an NVML failure as expected when every GPU uses VFIO.
+    expected_gpu_count: 1
     aliases: [example]
     capabilities:
       nvidia: true

@@ -62,7 +62,9 @@ class InspectionService:
                 for name in names
                 if name != "host_ping" and not (cancellation and cancellation.cancelled)
             })
-        observation = self._redact_observation(build_observation(host.name, results))
+        observation = self._redact_observation(build_observation(
+            host.name, results, host.expected_gpu_count,
+        ))
         log_paths = {
             name: self._save_raw_log(observation, name, result)
             for name, result in results.items()

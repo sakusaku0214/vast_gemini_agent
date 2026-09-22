@@ -13,7 +13,7 @@ from vast_agent.models.tool_result import ToolResult
         ("normal", set()),
         ("fallen_off_bus", {"NVIDIA_FALLEN_OFF_BUS"}),
         ("nvml_failure", {"NVML_UNAVAILABLE"}),
-        ("vfio_gpu", {"GPU_BOUND_VFIO"}),
+        ("vfio_gpu", {"GPU_BOUND_VFIO", "NVML_UNAVAILABLE"}),
         ("ssh_failure", {"SSH_UNREACHABLE"}),
     ],
 )
@@ -96,10 +96,29 @@ def test_binding_signatures_are_observed_but_vfio_is_not_implicitly_incident():
 
 
 def test_all_vfio_suppresses_only_expected_nvml_failure():
-    all_vfio = build_observation("test-host", fixture_results("full_vfio"))
+    two_vfio_results = fixture_results("full_vfio")
+    two_vfio_results["get_pci_status"] = two_vfio_results["get_pci_status"].model_copy(
+        update={"stdout": two_vfio_results["get_pci_status"].stdout + (
+            "\n0000:02:00.0 3D controller: NVIDIA Corporation Example [10de:0003]\n"
+            "\tKernel driver in use: vfio-pci\n"
+        )},
+    )
+    all_vfio = build_observation(
+        "test-host", two_vfio_results, expected_gpu_count=2,
+    )
     assert all_vfio.gpu.all_bound_to_vfio
     assert "GPU_BOUND_VFIO" in all_vfio.signatures
     assert "NVML_UNAVAILABLE" not in all_vfio.signatures
+
+    missing_gpu = build_observation(
+        "test-host", fixture_results("full_vfio"), expected_gpu_count=2,
+    )
+    assert not missing_gpu.gpu.all_bound_to_vfio
+    assert "NVML_UNAVAILABLE" in missing_gpu.signatures
+
+    unset_expected_count = build_observation("test-host", two_vfio_results)
+    assert not unset_expected_count.gpu.all_bound_to_vfio
+    assert "NVML_UNAVAILABLE" in unset_expected_count.signatures
 
     for case in ("mixed_binding", "normal"):
         results = fixture_results(case)
