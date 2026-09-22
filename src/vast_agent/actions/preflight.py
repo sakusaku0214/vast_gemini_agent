@@ -45,8 +45,15 @@ class ProductionPreflightProvider:
         observation, results = record.observation, record.tool_results
         sudo = self.executor.execute(host, ("sudo", "-n", "true"), 10)
         required_tools = self._required_tools(host, request)
+        tolerated_failures = set()
+        if (request.action_type == ActionType.VM_MODE_DISABLE
+                and observation.gpu.all_bound_to_vfio):
+            # nvidia-smi cannot enumerate processes when every GPU is intentionally
+            # detached from NVIDIA.  Complete PCI evidence makes that one failure safe.
+            tolerated_failures.add("get_gpu_processes")
         evidence_complete = sudo.success and all(
-            name in results and results[name].success for name in required_tools
+            name in tolerated_failures or (name in results and results[name].success)
+            for name in required_tools
         )
         target_exists, current = self._target(host, request, results, observation)
         gpu_binding = None
@@ -99,7 +106,11 @@ class ProductionPreflightProvider:
             gpu_mapping_resolved=mapping, gpu_binding=gpu_binding,
             gpu_processes=gpu_processes,
             nvml_ok=observation.gpu.nvml_ok,
-            gpu_present=bool(observation.gpu.devices and observation.gpu.pci_count),
+            gpu_present=(
+                observation.gpu.pci_count > 0
+                if observation.gpu.pci_observed and observation.gpu.pci_ok
+                else bool(observation.gpu.devices)
+            ),
             pci_nvidia=observation.gpu.nvidia_bound,
             pci_vfio=observation.gpu.vfio_bound,
             pci_unbound=observation.gpu.unbound + observation.gpu.unknown_bound,

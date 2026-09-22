@@ -27,7 +27,8 @@ def detect_signatures(obs: Observation) -> list[KnownSignature]:
         if condition: found.append(signature)
 
     add(obs.ssh_observed and not obs.ssh_ok, KnownSignature.SSH_UNREACHABLE)
-    add(obs.ssh_ok and obs.gpu.nvml_observed and not obs.gpu.nvml_ok,
+    add(obs.ssh_ok and obs.gpu.nvml_observed and not obs.gpu.nvml_ok
+        and not obs.gpu.all_bound_to_vfio,
         KnownSignature.NVML_UNAVAILABLE)
     add(obs.gpu.pci_observed and obs.gpu.unbound > 0, KnownSignature.GPU_UNBOUND)
     add(obs.gpu.pci_observed and obs.gpu.vfio_bound > 0, KnownSignature.GPU_BOUND_VFIO)

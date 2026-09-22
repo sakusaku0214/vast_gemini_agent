@@ -492,3 +492,93 @@ def test_action_specific_gpu_and_reboot_required_failures_are_incomplete():
     results = {name: ToolResult(success=True, duration_ms=1) for name in reboot_required}
     results["get_docker_status"] = ToolResult(success=False, duration_ms=1)
     assert not all(results[name].success for name in reboot_required)
+
+
+def test_vm_disable_tolerates_only_all_vfio_gpu_process_failure():
+    from types import SimpleNamespace
+
+    from conftest import fixture_results
+
+    from vast_agent.actions.preflight import ProductionPreflightProvider
+    from vast_agent.diagnostics.parser import build_observation
+
+    def ok(stdout=""):
+        return ToolResult(success=True, stdout=stdout, duration_ms=1)
+
+    def collect(case, action_type):
+        results = fixture_results(case)
+        if case == "mixed_binding":
+            results["get_pci_status"] = results["get_pci_status"].model_copy(update={
+                "stdout": results["get_pci_status"].stdout + (
+                    "\n0000:02:00.0 3D controller: NVIDIA Corporation Example [10de:0003]\n"
+                    "\tKernel driver in use: vfio-pci\n"
+                ),
+            })
+        results.update({
+            "get_vm_status": ok("shut off"),
+            "get_gpu_processes": ToolResult(
+                success=False, stderr="No devices were found", duration_ms=1,
+            ),
+            "get_d_state_processes": ok("S 1 init"),
+        })
+        observation = build_observation("h", results)
+
+        class Inspection:
+            def inspect_and_record(self, host, executor):
+                return SimpleNamespace(observation=observation, tool_results=results)
+
+        class Remote:
+            def execute(self, host, command, timeout, cancellation=None):
+                return ok()
+
+        settings = OperationsSettings(enabled=True, enable_vms_script="/opt/enable_vms.py")
+        provider = ProductionPreflightProvider(Inspection(), Remote(), settings)
+        request = ActionRequest(
+            host="h", action_type=action_type,
+            parameters=VMParameters(mode="off" if action_type == ActionType.VM_MODE_DISABLE else "on"),
+        )
+        return provider.collect(Host(name="h", address="192.0.2.8", ssh_user="a"), request)
+
+    disabled = collect("full_vfio", ActionType.VM_MODE_DISABLE)
+    assert disabled.evidence_complete
+    assert disabled.gpu_present
+    assert disabled.gpu_mapping_resolved and disabled.gpu_binding == "vfio"
+
+    # The same NVIDIA process evidence failure must remain fatal for enabling VM mode.
+    assert not collect("full_vfio", ActionType.VM_MODE_ENABLE).evidence_complete
+
+    # Mixed ownership is never treated as the all-VFIO exception.
+    mixed = collect("mixed_binding", ActionType.VM_MODE_DISABLE)
+    assert not mixed.evidence_complete
+    assert mixed.gpu_mapping_resolved and mixed.gpu_binding == "unknown"
+    from vast_agent.actions.policies import PolicyDecision, PolicyEngine
+    request = ActionRequest(
+        host="h", action_type=ActionType.VM_MODE_DISABLE,
+        parameters=VMParameters(mode="off"),
+    )
+    decision = PolicyEngine().evaluate(
+        request, mixed.model_copy(update={"evidence_complete": True}),
+        OperationsSettings(enabled=True, enable_vms_script="/opt/enable_vms.py"),
+    )
+    assert decision.decision == PolicyDecision.BLOCK
+    assert "VM_GPU_OWNERSHIP_UNSAFE" in decision.reasons
+
+
+def test_gpu_reset_without_nvml_index_mapping_remains_blocked(tmp_path):
+    state = PreflightSnapshot(
+        ssh_reachable=True, sudo_available=True, target_exists=True,
+        evidence_complete=True, gpu_present=True, gpu_mapping_resolved=False,
+        gpu_binding="nvidia",
+    )
+    _, coordinator, remote = setup(tmp_path, state=state)
+    request = ActionRequest(
+        host="torrent", action_type=ActionType.GPU_RESET,
+        parameters=GPUParameters(gpu_index=0),
+    )
+    proposal = coordinator.propose(request, "7")
+    assert proposal.status == "BLOCKED"
+    assert remote.calls == []
+
+
+def test_operations_remain_disabled_by_default():
+    assert OperationsSettings().enabled is False

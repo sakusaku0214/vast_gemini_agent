@@ -13,7 +13,7 @@ from vast_agent.models.tool_result import ToolResult
         ("normal", set()),
         ("fallen_off_bus", {"NVIDIA_FALLEN_OFF_BUS"}),
         ("nvml_failure", {"NVML_UNAVAILABLE"}),
-        ("vfio_gpu", {"GPU_BOUND_VFIO", "NVML_UNAVAILABLE"}),
+        ("vfio_gpu", {"GPU_BOUND_VFIO"}),
         ("ssh_failure", {"SSH_UNREACHABLE"}),
     ],
 )
@@ -93,6 +93,33 @@ def test_binding_signatures_are_observed_but_vfio_is_not_implicitly_incident():
     assert "GPU_UNBOUND" in build_observation(
         "test-host", fixture_results("unbound_gpu"),
     ).signatures
+
+
+def test_all_vfio_suppresses_only_expected_nvml_failure():
+    all_vfio = build_observation("test-host", fixture_results("full_vfio"))
+    assert all_vfio.gpu.all_bound_to_vfio
+    assert "GPU_BOUND_VFIO" in all_vfio.signatures
+    assert "NVML_UNAVAILABLE" not in all_vfio.signatures
+
+    for case in ("mixed_binding", "normal"):
+        results = fixture_results(case)
+        results["get_gpu_status"] = ToolResult(
+            success=False, stderr="nvidia-smi failed", duration_ms=1,
+        )
+        observation = build_observation("test-host", results)
+        assert not observation.gpu.all_bound_to_vfio
+        assert "NVML_UNAVAILABLE" in observation.signatures
+
+
+def test_nvml_failure_without_pci_evidence_is_not_suppressed():
+    results = fixture_results("normal")
+    failed = results["get_gpu_status"].model_copy(
+        update={"success": False, "stdout": "", "stderr": "nvidia-smi failed"},
+    )
+    observation = build_observation("test-host", {"host_ping": results["host_ping"],
+                                                   "get_gpu_status": failed})
+    assert not observation.gpu.pci_observed
+    assert "NVML_UNAVAILABLE" in observation.signatures
 
 
 def test_gpu_only_marks_pci_unobserved_without_false_signatures():

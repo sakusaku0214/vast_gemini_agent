@@ -36,6 +36,11 @@ class PolicyEngine:
         if request.action_type in {ActionType.VM_MODE_ENABLE, ActionType.VM_MODE_DISABLE}:
             if not settings.enable_vms_script: reasons.append("VM_ACTION_NOT_CONFIGURED")
             if not state.gpu_mapping_resolved: reasons.append("VM_GPU_OWNERSHIP_UNRESOLVED")
+            expected_binding = (
+                "nvidia" if request.action_type == ActionType.VM_MODE_ENABLE else "vfio"
+            )
+            if state.gpu_binding != expected_binding:
+                reasons.append("VM_GPU_OWNERSHIP_UNSAFE")
             if state.running_vm or state.gpu_processes or state.active_workload: reasons.append("VM_MODE_CONFLICT")
         if request.action_type == ActionType.RESTART_LIBVIRT_SERVICE and state.running_vm:
             reasons.append("RUNNING_VM")

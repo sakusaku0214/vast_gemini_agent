@@ -38,6 +38,19 @@ class GpuSummary(BaseModel):
     devices: list[GpuDevice] = Field(default_factory=list)
     pci_devices: list[PciDevice] = Field(default_factory=list)
 
+    @property
+    def all_bound_to_vfio(self) -> bool:
+        """Whether complete PCI evidence proves every physical GPU uses VFIO."""
+        return (
+            self.pci_observed
+            and self.pci_ok
+            and self.pci_count > 0
+            and self.nvidia_bound == 0
+            and self.vfio_bound == self.pci_count
+            and self.unbound == 0
+            and self.unknown_bound == 0
+        )
+
 
 class SystemSummary(BaseModel):
     health_observed: bool = False
