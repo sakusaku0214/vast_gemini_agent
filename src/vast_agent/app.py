@@ -33,6 +33,7 @@ from vast_agent.config import (
 from vast_agent.conversation.state import ConversationStore
 from vast_agent.execution.base import redact
 from vast_agent.execution.ssh import SSHExecutor
+from vast_agent.host_config import set_expected_gpu_count
 from vast_agent.inspector import GROUPS
 from vast_agent.jobs.manager import JobManager
 from vast_agent.logging_utils import configure_agent_logging
@@ -56,6 +57,8 @@ def parser() -> argparse.ArgumentParser:
         item = sub.add_parser(name); item.add_argument("host")
     detect = sub.add_parser("detect-capabilities"); detect.add_argument("host")
     detect.add_argument("--apply", action="store_true")
+    gpu_count = sub.add_parser("set-gpu-count"); gpu_count.add_argument("host")
+    gpu_count.add_argument("count", type=_positive_integer)
     inspect = sub.add_parser("inspect"); inspect.add_argument("host")
     flags = inspect.add_mutually_exclusive_group()
     for group in GROUPS: flags.add_argument(f"--{group}", action="store_true")
@@ -68,6 +71,16 @@ def parser() -> argparse.ArgumentParser:
         sub.add_parser(name)
     run = sub.add_parser("run-discord"); run.add_argument("marker", nargs="?")
     return root
+
+
+def _positive_integer(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("COUNT must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("COUNT must be at least 1")
+    return parsed
 
 
 def _registry(paths: RuntimePaths):
@@ -259,6 +272,17 @@ def main(argv: list[str] | None = None) -> int:
         print(message); return 0 if ok else 2
     if args.command in {"update", "backup"}:
         print(f"ERROR: command '{args.command}' is not implemented", file=sys.stderr); return 3
+    if args.command == "set-gpu-count":
+        try:
+            host = registry.resolve(args.host)
+        except KeyError:
+            print(f"ERROR HOST_NOT_FOUND: {args.host}", file=sys.stderr); return 2
+        try:
+            set_expected_gpu_count(paths.hosts_file, host.name, args.count)
+        except (OSError, ConfigError, KeyError) as exc:
+            print(f"ERROR CONFIG_INVALID: {exc}", file=sys.stderr); return 2
+        print(f"{host.name}\nexpected_gpu_count: {args.count}\nhosts.yaml updated")
+        return 0
     executor = SSHExecutor(paths.known_hosts)
     if args.command == "run-discord":
         from vast_agent.discord_app.bot import create_bot
