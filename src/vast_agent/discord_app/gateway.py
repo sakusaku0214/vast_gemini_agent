@@ -9,9 +9,16 @@ from vast_agent.discord_app.formatting import split_messages, wants_continue_but
 class DiscordGateway:
     """Framework-light message adapter, directly testable with fake Discord objects."""
 
-    def __init__(self, guard, service, continue_view_factory=None) -> None:
+    def __init__(
+        self,
+        guard,
+        service,
+        continue_view_factory=None,
+        proposal_view_factory=None,
+    ) -> None:
         self.guard = guard; self.service = service
         self.continue_view_factory = continue_view_factory
+        self.proposal_view_factory = proposal_view_factory
         self._tasks: set[asyncio.Task] = set()
         self.log = logging.getLogger("vast_agent.discord")
 
@@ -32,8 +39,17 @@ class DiscordGateway:
                 and reply.job_id is not None
                 and wants_continue_button(reply.text)
             )
+            show_proposal = (
+                self.proposal_view_factory is not None
+                and reply.proposal_id is not None
+            )
             for index, chunk in enumerate(chunks):
-                if show_continue and index == len(chunks) - 1:
+                if index == len(chunks) - 1 and show_proposal:
+                    await message.channel.send(
+                        chunk,
+                        view=self.proposal_view_factory(reply.proposal_id),
+                    )
+                elif index == len(chunks) - 1 and show_continue:
                     await message.channel.send(
                         chunk,
                         view=self.continue_view_factory(reply.job_id),
