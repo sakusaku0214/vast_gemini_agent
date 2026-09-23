@@ -37,6 +37,7 @@ class InvestigationAgent:
         question: str,
         owner_id: str = "cli",
         channel_id: str = "cli",
+        previous_turn: dict[str, str] | None = None,
     ) -> str:
         start = time.monotonic()
         tool_calls = 0
@@ -55,9 +56,14 @@ class InvestigationAgent:
         base_text = (
             "Configured hosts:\n"
             + json.dumps(enabled_hosts, ensure_ascii=False)
-            + "\n\nHuman request:\n"
-            + question
         )
+        if previous_turn:
+            base_text += (
+                "\n\nPrevious conversation turn (context only):\n"
+                "Human: " + previous_turn.get("request", "") +
+                "\nAssistant: " + previous_turn.get("answer", "")
+            )
+        base_text += "\n\nCurrent human request:\n" + question
         recent_rounds: list[tuple[list[dict[str, object]], list[str]]] = []
         archived_ledger: list[str] = []
 
