@@ -13,6 +13,7 @@ from vast_agent.actions.models import (
     ActionType,
     PackageInstallParameters,
     PreflightSnapshot,
+    RebootParameters,
     VerificationResult,
 )
 from vast_agent.actions.policies import PolicyEngine
@@ -163,7 +164,7 @@ def test_exact_argv_and_approval_executes_once(tmp_path):
 
 @pytest.mark.parametrize(("change", "reason"), [
     ({"package_installed": True}, "PACKAGE_ALREADY_INSTALLED"),
-    ({"package_candidate": None}, "PACKAGE_CANDIDATE_NOT_FOUND"),
+    ({"package_candidate": None}, "PACKAGE_NOT_AVAILABLE"),
     ({"active_workload": True}, "ACTIVE_WORKLOAD"),
     ({"running_vm": True}, "RUNNING_VM"),
     ({"sudo_available": False}, "SUDO_NOT_AVAILABLE"),
@@ -178,20 +179,38 @@ def test_unsafe_package_preflight_blocks_without_mutation(tmp_path, change, reas
     assert remote.calls == []
 
 
-@pytest.mark.parametrize("value", ["--help", ";reboot", "../x", "vnstat\nreboot", "Apt"])
+@pytest.mark.parametrize("value", [
+    "--help", ";reboot", "../x", "vnstat\nreboot", "Apt", "foo;rm", "foo bar",
+    "foo/bar", "$(id)", "`id`", "foo|bar", "foo>bar",
+])
 def test_invalid_package_names_never_reach_executor(value):
     with pytest.raises(ValidationError):
         PackageInstallParameters(package_name=value)
 
 
-def test_catalog_boundary_rejects_unknown_package_before_preflight(tmp_path):
+def test_catalog_absence_does_not_reject_explicit_package(tmp_path):
     _, actions, remote, preflight = coordinator(tmp_path)
     unknown = ActionRequest(
         host="garage-mag", action_type=ActionType.PACKAGE_INSTALL,
         parameters=PackageInstallParameters(package_name="unknown-safe-name"),
     )
+    proposal = actions.propose(unknown, "7")
+    assert proposal.status == "PENDING"
+    assert proposal.parameters.expected_capability is None
+    assert preflight.calls == 1
+    assert remote.calls == []
+
+
+def test_catalog_backed_acquisition_still_requires_matching_metadata(tmp_path):
+    _, actions, remote, preflight = coordinator(tmp_path)
+    inconsistent = ActionRequest(
+        host="garage-mag", action_type=ActionType.PACKAGE_INSTALL,
+        parameters=PackageInstallParameters(
+            package_name="nvitop", expected_capability="traffic_history",
+        ),
+    )
     with pytest.raises(ValueError, match="do not match"):
-        actions.propose(unknown, "7")
+        actions.propose(inconsistent, "7")
     assert preflight.calls == 0
     assert remote.calls == []
 
@@ -225,9 +244,12 @@ def test_natural_language_catalog_and_conditional_present(tmp_path):
     assert preflight.calls == 1
 
 
-def test_resolver_only_emits_catalog_package_and_gemini_has_no_write_tool():
+def test_resolver_emits_exact_explicit_package_and_gemini_has_no_write_tool():
     hosts = HostRegistry(hosts={
-        "garage-mag": Host(name="garage-mag", address="192.0.2.8", ssh_user="agent"),
+        "garage-mag": Host(
+            name="garage-mag", aliases=["mag", "X570"],
+            address="192.0.2.8", ssh_user="agent",
+        ),
     })
     resolver = ActionIntentResolver(hosts)
     # Goal-shaped acquisition is deliberately left for Gemini capability reasoning;
@@ -237,7 +259,24 @@ def test_resolver_only_emits_catalog_package_and_gemini_has_no_write_tool():
     assert resolved is not None
     assert resolved.action_type == ActionType.PACKAGE_INSTALL
     assert resolved.parameters.package_name == "vnstat"
-    assert resolver.resolve("garage-magにcurl入れて") is None
+    assert resolved.parameters.expected_capability is None
+    assert resolved.parameters.reason == "explicit user request"
+    for text, package in (
+        ("X570にnvitop入れておいて", "nvitop"),
+        ("magにhtopインストールして", "htop"),
+        ("garage-magへiotop入れといて", "iotop"),
+        ("garage-magにnvtop入れて", "nvtop"),
+    ):
+        dynamic = resolver.resolve(text)
+        assert dynamic is not None
+        assert dynamic.parameters.package_name == package
+        assert dynamic.parameters.expected_capability is None
+
+    assert resolver.resolve("garage-magにGPU監視に便利なの入れて") is None
+
+    for invalid in ("foo;rm", "foo bar", "foo/bar", "$(id)", "`id`", "foo|bar", "foo>bar"):
+        with pytest.raises(ValueError):
+            resolver.resolve(f"garage-magに{invalid}入れて")
 
     from vast_agent.agent.functions import FUNCTION_DECLARATIONS
     declarations = str(FUNCTION_DECLARATIONS).casefold()
@@ -317,6 +356,80 @@ class GapAgent:
                 candidate_package="curl", confidence="high",
             )],
         )
+
+
+class FlexibleInstallAgent:
+    def __init__(self):
+        self.calls = []
+
+    def interpret_action(self, host, text):
+        self.calls.append((host, text))
+        return ActionRequest(
+            host=host, action_type=ActionType.PACKAGE_INSTALL,
+            parameters=PackageInstallParameters(
+                package_name="nvitop", reason="explicit user request",
+            ),
+        )
+
+
+class RebootIntentAgent:
+    def __init__(self):
+        self.interpretations = []
+        self.investigations = []
+
+    def interpret_action(self, host, text):
+        self.interpretations.append((host, text))
+        return ActionRequest(
+            host=host, action_type=ActionType.HOST_REBOOT,
+            parameters=RebootParameters(assessment="HOST_REBOOT_CANDIDATE"),
+        )
+
+    def investigate(self, host, text):
+        self.investigations.append((host, text))
+        return InvestigationResult(
+            summary="assessment only", recommended_action="HOST_REBOOT_CANDIDATE",
+        )
+
+
+def test_service_uses_flexible_interpretation_as_proposal_only_fallback(tmp_path):
+    db, actions, remote, preflight = coordinator(tmp_path)
+    agent = FlexibleInstallAgent()
+    service = AgentService(
+        actions.hosts, object(), remote, JobManager(db), ConversationStore(db),
+        agent=agent, actions=actions,
+    )
+
+    reply = asyncio.run(service.handle_question(
+        "garage-magへnvitopを導入しておいて", 7, 9,
+    ))
+
+    assert agent.calls == [("garage-mag", "garage-magへnvitopを導入しておいて")]
+    assert reply.proposal is not None
+    assert reply.proposal.status == "PENDING"
+    assert reply.proposal.parameters.package_name == "nvitop"
+    assert preflight.calls == 1
+    assert remote.calls == []
+
+
+def test_reboot_fallback_requires_current_turn_host_and_preserves_advice_assessment(tmp_path):
+    db, actions, remote, _ = coordinator(tmp_path)
+    agent = RebootIntentAgent()
+    service = AgentService(
+        actions.hosts, object(), remote, JobManager(db), ConversationStore(db),
+        agent=agent, actions=actions,
+    )
+
+    hostless = asyncio.run(service.handle_question("再起動して", 7, 9))
+    advice = asyncio.run(service.handle_question("garage-magは再起動した方がいい？", 7, 9))
+
+    assert hostless.proposal is None
+    assert "WRITE" in hostless.text
+    assert agent.interpretations == [("garage-mag", "garage-magは再起動した方がいい？")]
+    assert agent.investigations == [("garage-mag", "garage-magは再起動した方がいい？")]
+    assert advice.proposal is None
+    assert "assessment only" in advice.text
+    assert db.pending_approval_count() == 0
+    assert remote.calls == []
 
 
 @pytest.mark.parametrize(("text", "status", "proposal_count"), [

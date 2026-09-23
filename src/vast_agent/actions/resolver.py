@@ -12,8 +12,11 @@ from vast_agent.actions.models import (
     ServiceParameters,
     VMParameters,
 )
-from vast_agent.actions.package_catalog import CAPABILITY_PACKAGES
 from vast_agent.config import HostRegistry
+
+
+class InvalidPackageNameError(ValueError):
+    """An explicit install target was present, but failed the package schema."""
 
 
 class ActionIntentResolver:
@@ -33,20 +36,22 @@ class ActionIntentResolver:
             if context_host and re.fullmatch(r"\s*C\.[0-9]+\s*(?:を)?再起動して\s*", text):
                 host = self.hosts.resolve(context_host)
             else: return None
-        if any(word in text.casefold() for word in ("入れて", "install", "インストール")):
-            folded = text.casefold()
-            definition = next(
-                (entry for entry in CAPABILITY_PACKAGES if entry.package_name in folded), None,
-            )
-            if definition:
-                assert definition.acquisition is not None
+        if any(word in text.casefold() for word in (
+            "入れて", "入れといて", "install", "インストール",
+        )):
+            package_name = self._explicit_package(text, host)
+            if package_name is not None:
+                try:
+                    parameters = PackageInstallParameters(
+                        package_name=package_name,
+                        expected_capability=None,
+                        reason="explicit user request",
+                    )
+                except ValueError as exc:
+                    raise InvalidPackageNameError(package_name) from exc
                 return ActionRequest(
                     host=host.name, action_type=ActionType.PACKAGE_INSTALL,
-                    parameters=PackageInstallParameters(
-                        package_name=definition.acquisition.package_name,
-                        expected_capability=definition.capability_id,
-                        reason=f"{definition.description} capability is unavailable",
-                    ),
+                    parameters=parameters,
                 )
             return None
         container = re.search(r"(?<![A-Za-z0-9_])(C\.[0-9]+)(?![0-9])", text)
@@ -68,4 +73,37 @@ class ActionIntentResolver:
         if "再起動" in text:
             return ActionRequest(host=host.name, action_type=ActionType.HOST_REBOOT,
                                  parameters=RebootParameters(assessment="HOST_REBOOT_CANDIDATE"))
+        return None
+
+    @staticmethod
+    def _explicit_package(text: str, host) -> str | None:
+        """Extract the exact user-authored token adjacent to an install expression.
+
+        The host is deliberately required in the current message by ``resolve``.  This
+        parser does not search a package catalog, infer a recommendation, or correct a
+        spelling.  The typed parameter model remains the authority for valid syntax.
+        """
+        folded = text.casefold()
+        matches = [
+            (folded.find(name.casefold()), name)
+            for name in (host.name, *host.aliases)
+            if folded.find(name.casefold()) >= 0
+        ]
+        if not matches:
+            return None
+        host_at, matched_name = min(matches, key=lambda item: item[0])
+        tail = text[host_at + len(matched_name):].strip()
+        tail = re.sub(r"^(?:に|へ|で)\s*", "", tail)
+        japanese = re.search(r"(?:入れて(?:おいて)?|入れといて|インストール(?:して)?)", tail, re.I)
+        if japanese:
+            value = tail[:japanese.start()].strip()
+            value = re.sub(r"(?:が)?(?:なければ|無ければ|入ってないなら|必要なら)$", "", value)
+            value = re.sub(r"を$", "", value).strip()
+            return value if re.search(r"[a-z0-9]", value) else None
+        english = re.search(r"(?<![a-z0-9])install(?![a-z0-9])", tail, re.I)
+        if english:
+            before = tail[:english.start()].strip().removesuffix("を").strip()
+            after = tail[english.end():].strip()
+            value = before or after
+            return value if value and re.search(r"[a-z0-9]", value, re.I) else None
         return None

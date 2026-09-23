@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
+from vast_agent.actions.models import ActionType
+
 
 class Route(StrEnum):
     DETERMINISTIC = "deterministic"
@@ -19,6 +21,14 @@ class IntentDecision(BaseModel):
     action: str | None = None
     scope: str | None = None
     reason: str | None = None
+
+
+class ActionIntentCandidate(BaseModel):
+    """Untrusted model interpretation; application code must ground and type it."""
+
+    model_config = ConfigDict(extra="forbid")
+    action_type: ActionType | None = None
+    parameters: dict[str, object] = Field(default_factory=dict)
 
 
 class InspectHostArgs(BaseModel):
