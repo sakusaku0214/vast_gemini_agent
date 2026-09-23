@@ -23,7 +23,7 @@ from vast_agent.actions.package_catalog import capability_definition
 from vast_agent.actions.preflight import package_manager_state
 from vast_agent.actions.resolver import ActionIntentResolver, InvalidPackageNameError
 from vast_agent.agent.models import Route
-from vast_agent.agent.router import route_intent
+from vast_agent.agent.router import explicit_write_intent, route_intent
 from vast_agent.config import HostRegistry
 from vast_agent.conversation.state import ConversationState, ConversationStore
 from vast_agent.diagnostics.parser import summarize_docker_status, summarize_vm_status
@@ -62,6 +62,13 @@ class AgentService:
                               channel: int | str = "cli") -> ServiceReply:
         state = self.conversations.get(owner, channel)
         folded = text.casefold().strip()
+        pending_goal = state.investigation_context.get("pending_write_goal")
+        command_hint = self._is_command_hint(folded) and isinstance(pending_goal, str)
+        write_requested = explicit_write_intent(text) or command_hint
+        operation_text = (
+            f"Pending requested operation: {pending_goal}\nUser command hint: {text}"
+            if command_hint else text
+        )
         if folded == "!jobs" or "ジョブ見せ" in folded:
             lines = [f"#{j['id']} {j['status']:<11} {j['host'] or '-'} {j['kind']}"
                      for j in self.jobs.recent()]
@@ -155,8 +162,10 @@ class AgentService:
             return ServiceReply(self._clean(self._format_investigation(host.name, assessment)))
 
         decision = route_intent(text, self.registry)
-        if decision.route == Route.UNSUPPORTED_WRITE:
-            return await self._propose_generic_operation(text, owner, channel, state)
+        if decision.route == Route.UNSUPPORTED_WRITE or write_requested:
+            return await self._propose_generic_operation(
+                operation_text, owner, channel, state, user_text=text,
+            )
 
         host, choices = self._resolve_host(text, decision.host, state)
         if choices:
@@ -255,7 +264,9 @@ class AgentService:
                         self._clean(f"Job #{job.id}\n{summary}\n\n{rendered}"),
                         job.id, proposal=proposal, policy=policy,
                     )
-        if investigation_result is not None and investigation_result.mutation_requested:
+        if investigation_result is not None and (
+            investigation_result.mutation_requested or write_requested
+        ):
             return await self._proposal_from_investigation(
                 text, owner, channel, state, host, investigation_result,
             )
@@ -314,8 +325,11 @@ class AgentService:
         rendered = render_operation_proposal(plan, proposal.id, proposal.expires_at.isoformat())
         return ServiceReply(self._clean(rendered), proposal=proposal, policy="ALLOW")
 
-    async def _propose_generic_operation(self, text, owner, channel, state) -> ServiceReply:
-        write_host, host_source, choices = self._resolve_write_host(text, state)
+    async def _propose_generic_operation(
+        self, text, owner, channel, state, *, user_text: str | None = None,
+    ) -> ServiceReply:
+        routing_text = user_text or text
+        write_host, host_source, choices = self._resolve_write_host(routing_text, state)
         if choices:
             return ServiceReply("hostが曖昧です: " + ", ".join(choices))
         if write_host is None:
@@ -331,15 +345,30 @@ class AgentService:
             planner, write_host.name, host_source, self._clean(text), investigation,
         )
         if plan is None:
+            state.investigation_context = self._compact_context(
+                text, (write_host.name,), investigation,
+            )
+            state.investigation_context["pending_write_goal"] = text[:500]
+            self.conversations.save(owner, channel, state)
             return ServiceReply(
-                "operation classification or target grounding is uncertain; clarification is required",
+                "operation classification or target grounding is uncertain; "
+                "変更対象または値が曖昧なため確認が必要です。",
             )
         proposal = await asyncio.to_thread(self.actions.propose_operation, plan, str(owner))
         state.last_host = write_host.name
         state.write_context_host = None
+        state.investigation_context.pop("pending_write_goal", None)
         self.conversations.save(owner, channel, state)
         rendered = render_operation_proposal(plan, proposal.id, proposal.expires_at.isoformat())
         return ServiceReply(self._clean(rendered), proposal=proposal, policy="ALLOW")
+
+    @staticmethod
+    def _is_command_hint(text: str) -> bool:
+        """A command-shaped follow-up refines, but never executes, a pending operation."""
+        return bool(re.search(
+            r"(?:^|\s)(?:sudo\s+)?[a-z0-9_.+/-]+(?:\s+-{1,2}[a-z0-9][a-z0-9-]*)+",
+            text, re.I,
+        )) and bool(re.search(r"だった|かな|かも|コマンド|\?|？", text, re.I))
 
     @staticmethod
     def _is_cancel_request(text: str) -> bool:

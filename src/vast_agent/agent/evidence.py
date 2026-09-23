@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -27,11 +28,23 @@ _UNAVAILABLE = {
     "COMMAND_NOT_AVAILABLE",
 }
 
+_ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x1b\x07]*(?:\x07|\x1b\\))")
+
+
+def strip_ansi(value: str) -> str:
+    """Remove terminal control sequences without collapsing table whitespace."""
+    return _ANSI_ESCAPE.sub("", value)
+
 
 def compact_evidence(source: str, output: dict[str, object], max_chars: int) -> EvidenceRecord:
     """Normalize a tool result without ever treating its content as instructions."""
     error = output.get("error")
     payload = output.get("untrusted_evidence", output)
+    if isinstance(payload, dict):
+        payload = {
+            key: strip_ansi(value) if isinstance(value, str) else value
+            for key, value in payload.items()
+        }
     nested_error = payload.get("error") if isinstance(payload, dict) else None
     failed_read = isinstance(payload, dict) and payload.get("status") == "failed"
     if error in _UNAVAILABLE or nested_error in _UNAVAILABLE:

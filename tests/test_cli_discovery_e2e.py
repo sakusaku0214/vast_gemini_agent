@@ -106,6 +106,33 @@ def test_discovered_path_immediately_continues_requested_read_without_reasoning_
     assert client.calls == 2
 
 
+def test_discovery_recovers_prior_safe_read_without_model_continuation(tmp_path, host):
+    db = Database(tmp_path / "db.sqlite")
+    db.migrate()
+    remote = UserPathCliRemote()
+    functions = FunctionExecutor(
+        HostRegistry(hosts={host.name: host}), InspectionService(db, tmp_path / "logs"), db, remote,
+    )
+    path = f"/home/{host.ssh_user}/.local/bin/vastai"
+    client = ScriptedGeminiClient([
+        call("run_readonly_argv", {
+            "host": host.name, "executable": "vastai", "argv": ["show", "machines"],
+            "reason": "read requested rental state",
+        }, "1"),
+        call("query_executable", {
+            "host": host.name, "executable_name": "vastai",
+        }, "2"),
+        answer(),
+    ])
+
+    InvestigationAgent(
+        client, functions, db, GeminiSettings(max_llm_calls=3, max_agent_steps=3),
+    ).investigate(host.name, "vast cliでレント状況を確認")
+
+    assert (path, "show", "machines") in remote.calls
+    assert client.calls == 3
+
+
 def test_user_to_help_driven_vast_read_result(tmp_path, host):
     assert capability_definition("vast_cli") is None
     db = Database(tmp_path / "db.sqlite")

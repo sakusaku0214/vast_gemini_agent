@@ -167,9 +167,10 @@ class InvestigationAgent:
             ensure_ascii=False,
         )
         result.ground_from_validated_evidence(evidence)
-        result._display_evidence = "\n\n".join(
+        excerpts = dict.fromkeys(
             item.relevant_excerpt for item in session.evidence if item.relevant_excerpt
-        )[:4000]
+        )
+        result._display_evidence = "\n\n".join(excerpts)[:4000]
         paths = [
             item.facts.get("path") for item in session.evidence
             if item.source == "query_executable" and isinstance(item.facts.get("path"), str)
@@ -417,7 +418,9 @@ class InvestigationAgent:
                         "untrusted_evidence_record": record.model_dump(mode="json"),
                     }, ensure_ascii=False)}],
                 })
-                continuation = self._discovery_continuation(call.name, call.arguments, output)
+                continuation = self._discovery_continuation(
+                    call.name, call.arguments, output, session,
+                )
                 if continuation is not None and session.can_call():
                     path, argv = continuation
                     continuation_args = {
@@ -458,13 +461,26 @@ class InvestigationAgent:
         return result
 
     @staticmethod
-    def _discovery_continuation(name, arguments, output) -> tuple[str, list[str]] | None:
+    def _discovery_continuation(
+        name, arguments, output, session: InvestigationSession | None = None,
+    ) -> tuple[str, list[str]] | None:
         """Execute an already-selected READ immediately after absolute-path discovery."""
         if name != "query_executable":
             return None
         argv = arguments.get("continuation_argv")
         payload = output.get("untrusted_evidence", {})
         path = payload.get("path") if isinstance(payload, dict) else None
+        if (not isinstance(argv, list) or not argv) and session is not None:
+            wanted = str(arguments.get("executable_name", "")).casefold()
+            for selected in reversed(session.selected_calls):
+                if selected.get("tool") != "run_readonly_argv":
+                    continue
+                prior = selected.get("arguments", {})
+                executable = str(prior.get("executable", "")).rsplit("/", 1)[-1].casefold()
+                candidate = prior.get("argv")
+                if executable == wanted and isinstance(candidate, list) and candidate:
+                    argv = candidate
+                    break
         if not isinstance(path, str) or not isinstance(argv, list) or not argv:
             return None
         if validate_read_argv(path, argv).classification != ReadClassification.READ:

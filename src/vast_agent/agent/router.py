@@ -19,10 +19,35 @@ ADVICE_WORDS = ("すべき", "必要", "候補", "した方が", "でしょう",
 AGENT_WORDS = ("おかしく", "原因", "調べ", "なぜ", "なんで", "前にも", "過去", "消え")
 
 
+def explicit_write_intent(text: str) -> bool:
+    """Detect an explicit mutation request; this is application state, not model policy.
+
+    Questions and recollections about commands remain READs.  A mixed request that asks
+    for the command *and* imperatively requests the change is still a WRITE request.
+    """
+    folded = text.casefold().strip()
+    if re.search(r"(?:たっけ|てたっけ|必要なら|なければ|無ければ|入ってないなら)", folded):
+        return False
+    mutation = any(word in folded for word in WRITE_WORDS) or bool(re.search(
+        r"(?:開放|解除|無効|有効|動かし直|適用|変更|削除|入れて|落として|"
+        r"\b(?:enable|disable|install|remove|start|kill)\b)", folded,
+    ))
+    if not mutation:
+        return False
+    imperative = bool(re.search(
+        r"(?:して(?:おいて|ください|くれ|ほしい)?|しといて|して$|"
+        r"開放して|解除して|止めて|絞って|入れて|"
+        r"\b(?:please\s+)?(?:restart|reset|stop|reboot|shutdown|enable|disable|install|remove|start|kill)\b)",
+        folded,
+    ))
+    advice_only = any(word in folded for word in ADVICE_WORDS)
+    return imperative or not advice_only
+
+
 def route_intent(text: str, registry: HostRegistry) -> IntentDecision:
     folded = text.casefold()
     write_mentioned = any(word in folded for word in WRITE_WORDS)
-    if write_mentioned and not any(word in folded for word in ADVICE_WORDS):
+    if explicit_write_intent(text):
         return IntentDecision(route=Route.UNSUPPORTED_WRITE, reason="write operation requested")
     if "ホスト一覧" in folded or "host list" in folded:
         return IntentDecision(route=Route.DETERMINISTIC, action="list_hosts")

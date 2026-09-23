@@ -151,6 +151,43 @@ def test_natural_clock_release_investigates_inherited_host_before_proposal(tmp_p
     assert not any("--lock-gpu-clocks" in " ".join(call) for call in remote.calls)
 
 
+def test_application_write_intent_proposes_when_model_flag_is_false(tmp_path):
+    app, agent, db, remote = service(tmp_path)
+    asyncio.run(app.handle_question("h12sslのGPU状態見て", 7, 9))
+    original = agent.investigate
+
+    def without_model_write_flag(host, question, context=None):
+        result = original(host, question, context)
+        result.mutation_requested = False
+        return result
+
+    agent.investigate = without_model_write_flag
+    reply = asyncio.run(app.handle_question(
+        "クロック制限入れてるから開放しておいて。どんなコマンド使うか教えて", 7, 9,
+    ))
+
+    assert reply.proposal is not None
+    assert reply.proposal.plan.argv == ["-i", "0", "--reset-gpu-clocks"]
+    assert db.pending_approval_count() == 1
+    assert not any("--reset-gpu-clocks" in call for call in remote.calls)
+
+
+def test_command_hint_continues_pending_write_goal(tmp_path):
+    app, agent, _, _ = service(tmp_path)
+    asyncio.run(app.handle_question("h12sslのGPU状態見て", 7, 9))
+    original_plan = agent.plan_operation
+    agent.plan_operation = lambda *args: None
+    unresolved = asyncio.run(app.handle_question("クロック制限を開放しておいて", 7, 9))
+    assert unresolved.proposal is None
+
+    agent.plan_operation = original_plan
+    reply = asyncio.run(app.handle_question("sudo nvidia-smi -rgc だったかな", 7, 9))
+
+    assert reply.proposal is not None
+    assert "Pending requested operation" in agent.investigations[-1][1]
+    assert "sudo nvidia-smi -rgc" in agent.investigations[-1][1]
+
+
 def test_semantic_advice_never_creates_proposal(tmp_path):
     app, agent, db, _ = service(tmp_path)
     reply = asyncio.run(app.handle_question("h12sslのGPU0少し下げた方がいい？", 7, 9))
