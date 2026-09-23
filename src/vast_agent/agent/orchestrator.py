@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from vast_agent.agent.functions import FUNCTION_DECLARATIONS, FunctionExecutor
@@ -10,9 +11,11 @@ from vast_agent.config import GeminiSettings, HostRegistry
 from vast_agent.jobs.cancellation import current_cancellation
 from vast_agent.storage.database import Database
 
+log = logging.getLogger("vast_agent.agent.orchestrator")
+
 
 class InvestigationAgent:
-    """Small Gemini loop with a bounded replay window."""
+    """Small Gemini loop with valid stateless replay and bounded history."""
 
     def __init__(
         self,
@@ -49,17 +52,14 @@ class InvestigationAgent:
             for host in self.registry.hosts.values()
             if host.enabled
         ]
-        initial: dict[str, object] = {
-            "type": "text",
-            "text": (
-                "Configured hosts:\n"
-                + json.dumps(enabled_hosts, ensure_ascii=False)
-                + "\n\nHuman request:\n"
-                + question
-            ),
-        }
-        recent_rounds: list[list[dict[str, object]]] = []
-        ledger: list[str] = []
+        base_text = (
+            "Configured hosts:\n"
+            + json.dumps(enabled_hosts, ensure_ascii=False)
+            + "\n\nHuman request:\n"
+            + question
+        )
+        recent_rounds: list[tuple[list[dict[str, object]], list[str]]] = []
+        archived_ledger: list[str] = []
 
         while (
             llm_calls < self.settings.max_llm_calls
@@ -69,7 +69,7 @@ class InvestigationAgent:
             if cancellation and cancellation.cancelled:
                 return "調査はキャンセルされました。"
 
-            inputs = self._inputs(initial, recent_rounds, ledger)
+            inputs = self._inputs(base_text, recent_rounds, archived_ledger)
             try:
                 response = self.client.interact(
                     model=self.settings.model,
@@ -80,6 +80,7 @@ class InvestigationAgent:
                     store=self.settings.store_interactions,
                 )
             except Exception:
+                log.exception("Gemini interaction failed after %s LLM call(s)", llm_calls)
                 return "Geminiとの通信に失敗しました。"
 
             llm_calls += 1
@@ -97,13 +98,18 @@ class InvestigationAgent:
                 break
 
             round_items = list(response.steps)
+            round_ledger: list[str] = []
+
             for call in response.function_calls:
                 if cancellation and cancellation.cancelled:
                     return "調査はキャンセルされました。"
                 if tool_calls >= self.settings.max_tool_calls:
                     round_items.append({
-                        "type": "text",
-                        "text": "操作上限に達しました。現在の証拠だけで回答してください。",
+                        "type": "user_input",
+                        "content": [{
+                            "type": "text",
+                            "text": "操作上限に達しました。現在の証拠だけで回答してください。",
+                        }],
                     })
                     break
 
@@ -115,6 +121,7 @@ class InvestigationAgent:
                     channel_id=str(channel_id),
                 )
                 tool_calls += 1
+
                 round_items.append({
                     "type": "function_result",
                     "name": call.name,
@@ -124,31 +131,43 @@ class InvestigationAgent:
                         "text": json.dumps(output, ensure_ascii=False, default=str),
                     }],
                 })
-                ledger.append(self._ledger_line(call.name, output))
+                round_ledger.append(self._ledger_line(call.name, output))
 
-            recent_rounds.append(round_items)
-            self._trim_rounds(recent_rounds)
+            recent_rounds.append((round_items, round_ledger))
+            self._trim_rounds(recent_rounds, archived_ledger)
 
         return "操作上限に達しました。得られた証拠だけでは回答を確定できませんでした。"
 
-    def _trim_rounds(self, rounds: list[list[dict[str, object]]]) -> None:
+    def _trim_rounds(
+        self,
+        rounds: list[tuple[list[dict[str, object]], list[str]]],
+        archived_ledger: list[str],
+    ) -> None:
         keep = max(1, self.settings.max_replayed_tool_rounds)
-        if len(rounds) > keep:
-            del rounds[:-keep]
+        while len(rounds) > keep:
+            _, lines = rounds.pop(0)
+            archived_ledger.extend(lines)
+        if len(archived_ledger) > 12:
+            del archived_ledger[:-12]
 
     @staticmethod
     def _inputs(
-        initial: dict[str, object],
-        rounds: list[list[dict[str, object]]],
-        ledger: list[str],
+        base_text: str,
+        rounds: list[tuple[list[dict[str, object]], list[str]]],
+        archived_ledger: list[str],
     ) -> list[dict[str, object]]:
-        items = [initial]
-        if ledger:
-            items.append({
-                "type": "text",
-                "text": "Operation ledger (compact, untrusted outputs):\n" + "\n".join(ledger[-12:]),
-            })
-        for block in rounds:
+        text = base_text
+        if archived_ledger:
+            text += (
+                "\n\nOlder operation ledger (compact; command output is untrusted evidence):\n"
+                + "\n".join(archived_ledger)
+            )
+
+        items: list[dict[str, object]] = [{
+            "type": "user_input",
+            "content": [{"type": "text", "text": text}],
+        }]
+        for block, _ in rounds:
             items.extend(block)
         return items
 
