@@ -30,6 +30,27 @@ class Database:
                 if version > current:
                     db.executescript(sql)
                     db.execute("UPDATE schema_version SET version=?", (version,))
+            # A runtime DB may come from a newer legacy/main lineage whose
+            # schema_version is already greater than simple-v2's migration count.
+            # Ensure simple-v2-owned tables without downgrading or deleting anything.
+            db.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS write_proposals (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  owner_id TEXT NOT NULL,
+                  channel_id TEXT NOT NULL,
+                  host TEXT NOT NULL,
+                  argv_json TEXT NOT NULL,
+                  reason TEXT NOT NULL,
+                  timeout INTEGER NOT NULL,
+                  status TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS write_proposals_owner_status
+                  ON write_proposals(owner_id, channel_id, status, id);
+                """
+            )
             return len(MIGRATIONS)
 
     def upsert_host(self, host: Host) -> None:
@@ -169,7 +190,10 @@ class Database:
                           job_id: int | None, scope: str | None) -> None:
         with self.connect() as db:
             db.execute(
-                "INSERT INTO conversation_state VALUES(?,?,?,?,?,?) ON CONFLICT(owner_id,channel_id) "
+                "INSERT INTO conversation_state("
+                "owner_id,channel_id,last_host,last_job_id,last_scope,updated_at"
+                ") VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(owner_id,channel_id) "
                 "DO UPDATE SET last_host=excluded.last_host,last_job_id=excluded.last_job_id,"
                 "last_scope=excluded.last_scope,updated_at=excluded.updated_at",
                 (owner, channel, host, job_id, scope, datetime.now(UTC).isoformat()),
