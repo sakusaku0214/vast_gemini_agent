@@ -115,12 +115,10 @@ def validate_write_argv(argv: Sequence[str]) -> ValidatedArgv:
             raise ArgvRejected("shell operators are not allowed")
         clean.append(token)
 
-    executable_index = 0
     executable = PurePosixPath(clean[0]).name.casefold()
     if executable == "sudo":
         if len(clean) < 3 or clean[1] != "-n":
             raise ArgvRejected("sudo WRITE requires exactly the non-interactive -n prefix")
-        executable_index = 2
         executable = PurePosixPath(clean[2]).name.casefold()
 
     if executable in SHELL_EXECUTABLES or executable == "eval":
