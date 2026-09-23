@@ -179,6 +179,7 @@ runtime:    %LOCALAPPDATA%\VastGeminiAgent
 主な設定:
 
 - `operations.enabled`: mutation execution 全体の master switch（default `false`）
+- `operations.generic_operations_enabled`: generic approved argv execution の独立 opt-in（default `false`）
 - `operations.allowed_actions`: typed action class ごとの execution policy（default empty）
 - `operations.approval_ttl_seconds`: Proposal expiry
 - action / reboot / SSH / external tool timeout
@@ -187,7 +188,9 @@ runtime:    %LOCALAPPDATA%\VastGeminiAgent
 - host registry、aliases、capabilities、SSH endpoint
 - pinned SSH host keys と最小 passwordless sudo
 
-安全な migration のため、generic approved operation execution は実装・policy で明示的に有効になるまで default deny です。Proposal の理解や表示と execution permission は別です。
+安全な migration のため、generic approved operation execution は `operations.enabled` と
+`operations.generic_operations_enabled` の両方を明示的に有効化するまで default deny です。
+Proposal の理解や表示と execution permission は別です。
 
 ## Discord examples
 
@@ -229,7 +232,8 @@ Windows GitHub Actions でも同じ safety boundaries と runtime integration �
 
 ## Current limitations
 
-- Generic mutation execution は default deny で、deployment policy と coordinator integration が必要です。
+- Generic mutation execution は approval pipeline に統合済みですが、deployment ごとの明示 opt-in が必要です。
+- Generic operation を code-owned verification へ安全に対応付けられない場合は `SUCCEEDED_UNVERIFIED` として記録し、fully verified success とは表示しません。
 - Unknown CLI verb は自動 READ ではなく Proposal/clarification に分類されます。
 - Tuning は自律 loop ではなく、一回の変更ごとに承認が必要です。
 - 実ホストで利用できる evidence は installed tools、sudoers、host capability 設定に依存します。

@@ -1,3 +1,5 @@
+import pytest
+
 from vast_agent.agent.generic_read import (
     ReadClassification,
     run_validated_read,
@@ -25,6 +27,7 @@ def test_help_and_vast_show_are_read():
     assert validate_read_argv("vastai", ["--help"]).classification == ReadClassification.READ
     assert validate_read_argv("vastai", ["show", "machines"]).classification == ReadClassification.READ
     assert validate_read_argv("unknown-cli", ["--help"], help_only=True).classification == ReadClassification.READ
+    assert validate_read_argv("vastai", ["show", "--help"], help_only=True).classification == ReadClassification.READ
 
 
 def test_shell_and_mutations_never_auto_execute():
@@ -34,6 +37,20 @@ def test_shell_and_mutations_never_auto_execute():
     assert validate_read_argv("vastai", ["destroy", "instance", "1"]).classification == ReadClassification.MUTATION
     assert validate_read_argv("systemctl", ["restart", "vastai.service"]).classification == ReadClassification.MUTATION
     assert validate_read_argv("vastai", ["show", "$HOME"]).classification == ReadClassification.BLOCKED
+
+
+@pytest.mark.parametrize(("executable", "argv"), [
+    ("shutdown", ["-h", "now"]),
+    ("nvidia-smi", ["--persistence-mode=1"]),
+    ("nvidia-smi", ["-rgc"]),
+    ("systemctl", ["restart", "vastai.service", "--help"]),
+    ("vastai", ["destroy", "instance", "123", "--help"]),
+])
+def test_help_and_flag_forms_cannot_disguise_mutations(executable, argv):
+    remote = RecordingExecutor()
+    result = run_validated_read(remote, host(), executable, argv)
+    assert result["classification"] != ReadClassification.READ
+    assert remote.calls == []
 
 
 def test_unknown_and_secret_reads_fail_closed():

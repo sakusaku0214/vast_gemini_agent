@@ -10,13 +10,21 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from vast_agent.actions.models import ProposalStatus
+
 _META = re.compile(r"(?:\|\||&&|>>|[|<>;`$*?\[\]{}~]|[\r\n\x00])")
-_SHELLS = frozenset({"sh", "bash", "dash", "zsh", "fish", "eval", "sudo", "env"})
-_DESTRUCTIVE = frozenset({"mkfs", "fdisk", "parted", "sfdisk", "wipefs", "flashrom"})
+_SHELLS = frozenset({
+    "sh", "bash", "dash", "zsh", "fish", "eval", "sudo", "env", "python", "python3",
+    "perl", "ruby", "node", "php", "awk", "xargs",
+})
+_DESTRUCTIVE = frozenset({
+    "mkfs", "fdisk", "parted", "sfdisk", "wipefs", "flashrom", "dd", "rm",
+})
 
 
 class OperationPlan(BaseModel):
@@ -33,6 +41,8 @@ class OperationPlan(BaseModel):
     expected_effect: str = Field(min_length=1, max_length=500)
     known_side_effects: list[str] = Field(default_factory=list, max_length=8)
     verification_plan: str = Field(min_length=1, max_length=500)
+    verification_kind: Literal["service_state", "gpu_state", "executable", "unavailable"]
+    verification_target: str | None = Field(default=None, max_length=128)
     command_source: str = Field(min_length=1, max_length=200)
     rollback: str | None = Field(default=None, max_length=500)
     current_relevant_state: str = Field(default="unknown", max_length=500)
@@ -54,11 +64,25 @@ class OperationPlan(BaseModel):
             raise ValueError("shell, sudo, and environment wrappers are not operation executables")
         if exe in _DESTRUCTIVE or exe.startswith("mkfs."):
             raise ValueError("destructive storage/firmware operation is prohibited")
-        if exe == "dd" or (exe == "rm" and "-rf" in words and "/" in words):
-            raise ValueError("raw overwrite or root deletion is prohibited")
         joined = " ".join(words)
         if any(marker in joined for marker in (".ssh", "credentials", "shadow", "token", "secret")):
             raise ValueError("credential or secret access is prohibited")
+        if ("disable" in words or "mask" in words) and any(
+            marker in joined for marker in ("vast-agent", "vast_gemini", "approval", "safety")
+        ):
+            raise ValueError("disabling approval or safety mechanisms is prohibited")
+        if self.host.casefold() in {"*", "all", "fleet", "全台"}:
+            raise ValueError("implicit fleet operation is prohibited")
+        if self.verification_kind != "unavailable" and not self.verification_target:
+            raise ValueError("verification target is required")
+        if self.verification_kind == "service_state":
+            if exe != "systemctl" or not words or words[0] not in {"restart", "start", "stop"}:
+                raise ValueError("service verification does not match the operation")
+            if self.verification_target not in self.argv[1:]:
+                raise ValueError("service verification target must be an approved argument")
+        if (self.verification_kind == "gpu_state"
+                and (exe != "nvidia-smi" or not self.verification_target.isdigit())):
+            raise ValueError("GPU verification must name a numeric nvidia-smi target")
         return self
 
     def fingerprint(self, relevant_preflight: dict[str, object]) -> str:
@@ -69,6 +93,21 @@ class OperationPlan(BaseModel):
     def execution_argv(self) -> tuple[str, ...]:
         command = (self.executable, *self.argv)
         return ("sudo", "-n", *command) if self.requires_sudo else command
+
+
+class OperationProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int | None = None
+    host: str
+    action_type: Literal["EXECUTE_APPROVED_ARGV"] = "EXECUTE_APPROVED_ARGV"
+    plan: OperationPlan
+    risk_class: Literal["DANGEROUS"] = "DANGEROUS"
+    status: ProposalStatus
+    created_at: datetime
+    expires_at: datetime
+    created_by: str
+    preflight_summary: dict[str, bool]
+    preflight_fingerprint: str
 
 
 def render_operation_proposal(plan: OperationPlan, proposal_id: int, expires_at: str) -> str:

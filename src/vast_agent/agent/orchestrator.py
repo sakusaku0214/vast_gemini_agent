@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 
 from pydantic import TypeAdapter, ValidationError
@@ -12,6 +13,7 @@ from vast_agent.actions.models import (
     ActionParameters,
     ActionRequest,
 )
+from vast_agent.actions.operation_plan import OperationPlan
 from vast_agent.actions.registry import ActionRegistry
 from vast_agent.agent.evidence import compact_evidence
 from vast_agent.agent.functions import FunctionExecutor
@@ -23,6 +25,7 @@ from vast_agent.agent.prompts import (
     ACTION_INTENT_PROMPT,
     FINAL_SYNTHESIS_PROMPT,
     GENERAL_SYSTEM_PROMPT,
+    OPERATION_PLANNER_PROMPT,
     SYSTEM_PROMPT,
 )
 from vast_agent.config import GeminiSettings
@@ -125,6 +128,40 @@ class InvestigationAgent:
         except (ValidationError, ValueError):
             return None
         return request if action_target_is_grounded(request, message) else None
+
+    def plan_operation(self, host: str, host_source: str, message: str,
+                       investigation: InvestigationResult) -> OperationPlan | None:
+        """Plan one inert generic operation; this method has no execution tools or authority."""
+        evidence = investigation.model_dump_json(exclude={"capability_gaps"})
+        try:
+            response = self.client.interact(
+                model=self.settings.model,
+                inputs=[_user_input(
+                    f"Fixed host: {host}\nHost source: {host_source}\n"
+                    f"Current user request: {message}\nValidated investigation: {evidence}"
+                )],
+                system_instruction=OPERATION_PLANNER_PROMPT, tools=[],
+                thinking_level=self.settings.investigate_thinking_level,
+                store=self.settings.store_interactions,
+            )
+            self.database.save_token_usage(
+                "operation_plan", self.settings.model,
+                self.settings.investigate_thinking_level, response.usage,
+            )
+            if response.function_calls or not response.output_text:
+                return None
+            plan = OperationPlan.model_validate_json(response.output_text)
+        except (ValidationError, ValueError):
+            logger.warning("OperationPlan validation failed")
+            return None
+        if plan.host != host or plan.host_source != host_source:
+            return None
+        # Host context may select a host, but a mutable GPU target must be authored now.
+        if plan.verification_kind == "gpu_state":
+            target = re.search(r"GPU\s*([0-9]+)", message, re.I)
+            if target is None or target.group(1) != plan.verification_target:
+                return None
+        return plan
 
     @staticmethod
     def _fallback_from_evidence(session: InvestigationSession, *, summary: str,

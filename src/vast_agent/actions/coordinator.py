@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pydantic import TypeAdapter
 
 from vast_agent.actions.executor import ActionVerifier, TypedActionExecutor
+from vast_agent.actions.generic_operation import GenericOperationRuntime, GenericPreflightSnapshot
 from vast_agent.actions.models import (
     ActionParameters,
     ActionProposal,
@@ -15,6 +16,7 @@ from vast_agent.actions.models import (
     ProposalStatus,
     VerificationResult,
 )
+from vast_agent.actions.operation_plan import OperationPlan, OperationProposal
 from vast_agent.actions.policies import PolicyDecision, PolicyEngine
 from vast_agent.actions.preflight import PreflightProvider
 from vast_agent.actions.reboot import RebootCoordinator, RebootResult
@@ -42,6 +44,7 @@ class ActionCoordinator:
         self.locks = locks or HostLockManager()
         self.reboot = reboot
         self.secrets = secrets
+        self.generic = GenericOperationRuntime(executor.remote, settings.action_timeout_seconds)
 
     def propose(self, request: ActionRequest, created_by: str,
                 now: datetime | None = None) -> ActionProposal:
@@ -61,6 +64,29 @@ class ActionCoordinator:
         )
         proposal.id = self.db.create_action_proposal(proposal)
         self.db.add_action_event(proposal.id, "PROPOSED", policy.decision)
+        return proposal
+
+    def propose_operation(self, plan: OperationPlan, created_by: str,
+                          now: datetime | None = None) -> OperationProposal:
+        host = self.hosts.resolve(plan.host)
+        state = self.generic.preflight(host, plan)
+        moment = now or datetime.now(UTC)
+        blocked = (not state.host_enabled or not state.ssh_reachable
+                   or (plan.requires_sudo and not state.sudo_available))
+        status = ProposalStatus.BLOCKED if blocked else ProposalStatus.PENDING
+        fingerprint = plan.fingerprint(state.model_dump(mode="json"))
+        proposal = OperationProposal(
+            host=host.name, plan=plan, status=status, created_at=moment,
+            expires_at=moment + timedelta(seconds=self.settings.approval_ttl_seconds),
+            created_by=created_by, preflight_summary=state.model_dump(mode="json"),
+            preflight_fingerprint=fingerprint,
+        )
+        proposal.id = self.db.create_operation_proposal(
+            plan, status=status, created_at=proposal.created_at,
+            expires_at=proposal.expires_at, created_by=created_by,
+            preflight_json=state.model_dump_json(), preflight_fingerprint=fingerprint,
+        )
+        self.db.add_action_event(proposal.id, "PROPOSED", "GENERIC_OPERATION")
         return proposal
 
     def approve(self, proposal_id: int, *, user_id: int, channel_id: int,
@@ -84,6 +110,8 @@ class ActionCoordinator:
     def _consume(self, proposal_id: int) -> Outcome:
         row = self.db.get_action_proposal(proposal_id)
         if not row: return False, "PROPOSAL_NOT_FOUND"
+        if row["action_type"] == "EXECUTE_APPROVED_ARGV":
+            return self._consume_operation(proposal_id, row)
         request = ActionRequest(host=str(row["host"]), action_type=ActionType(str(row["action_type"])),
             parameters=TypeAdapter(ActionParameters).validate_python(json.loads(str(row["params_json"]))))
         host = self.hosts.resolve(request.host)
@@ -136,6 +164,53 @@ class ActionCoordinator:
             self.db.set_proposal_status(proposal_id, status)
             self.db.add_action_event(proposal_id, str(status), summary, run_id)
             return status == ProposalStatus.SUCCEEDED, status
+
+    def _consume_operation(self, proposal_id: int, row: dict[str, object]) -> Outcome:
+        plan = OperationPlan.model_validate_json(str(row["params_json"]))
+        host = self.hosts.resolve(plan.host)
+        with self.locks.acquire(host.name, LockClass.WRITE):
+            fresh: GenericPreflightSnapshot = self.generic.preflight(host, plan)
+            self.db.add_action_event(proposal_id, "PREFLIGHT_RECHECK", "GENERIC_OPERATION")
+            if not self.settings.enabled or not self.settings.generic_operations_enabled:
+                self.db.set_proposal_status(
+                    proposal_id, ProposalStatus.INVALIDATED, "GENERIC_OPERATIONS_DISABLED",
+                )
+                self.db.add_action_event(proposal_id, "INVALIDATED", "GENERIC_OPERATIONS_DISABLED")
+                return False, "GENERIC_OPERATIONS_DISABLED"
+            if (not fresh.host_enabled or not fresh.ssh_reachable
+                    or (plan.requires_sudo and not fresh.sudo_available)):
+                self.db.set_proposal_status(proposal_id, ProposalStatus.INVALIDATED, "PREFLIGHT_BLOCKED")
+                self.db.add_action_event(proposal_id, "INVALIDATED", "PREFLIGHT_BLOCKED")
+                return False, "PREFLIGHT_BLOCKED"
+            if plan.fingerprint(fresh.model_dump(mode="json")) != row["preflight_fingerprint"]:
+                self.db.set_proposal_status(proposal_id, ProposalStatus.INVALIDATED, "PREFLIGHT_CHANGED")
+                self.db.add_action_event(proposal_id, "INVALIDATED", "PREFLIGHT_CHANGED")
+                return False, "PREFLIGHT_CHANGED"
+            run_id = self.db.create_action_run(proposal_id)
+            self.db.set_proposal_status(proposal_id, ProposalStatus.EXECUTING)
+            self.db.add_action_event(proposal_id, "EXECUTING", "GENERIC_OPERATION", run_id)
+            command = self.generic.execute(host, plan)
+            self.db.add_action_event(proposal_id, "COMMAND_DISPATCHED", run_id=run_id)
+            if not command.success:
+                status = ProposalStatus.FAILED
+                code = "UNKNOWN_AFTER_TIMEOUT" if command.timed_out else str(
+                    command.error_code or "COMMAND_FAILED"
+                )
+                summary = "approved command did not complete successfully"
+            else:
+                self.db.add_action_event(proposal_id, "VERIFYING", run_id=run_id)
+                verified, summary = self.generic.verify(host, plan)
+                if verified is True:
+                    status, code = ProposalStatus.SUCCEEDED, None
+                elif verified is None:
+                    status, code = ProposalStatus.SUCCEEDED_UNVERIFIED, "VERIFICATION_UNAVAILABLE"
+                else:
+                    status, code = ProposalStatus.FAILED_VERIFY, "FAILED_VERIFY"
+            summary = redact(summary, self.secrets)
+            self.db.finish_action_run(run_id, status, command.exit_code, code, summary)
+            self.db.set_proposal_status(proposal_id, status)
+            self.db.add_action_event(proposal_id, str(status), summary, run_id)
+            return status == ProposalStatus.SUCCEEDED, str(status)
 
     def _redact_snapshot(self, state: PreflightSnapshot) -> PreflightSnapshot:
         def clean(value):

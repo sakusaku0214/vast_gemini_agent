@@ -30,6 +30,10 @@ class ReadValidation:
 
 
 _SHELL_EXECUTORS = frozenset({"sh", "bash", "dash", "zsh", "fish", "eval", "env", "printenv"})
+_MUTATION_EXECUTABLES = frozenset({
+    "shutdown", "reboot", "poweroff", "halt", "rm", "dd", "mount", "umount", "chmod",
+    "chown", "kill", "pkill", "killall", "apt", "apt-get", "dpkg",
+})
 _MUTATION_VERBS = frozenset({
     "create", "destroy", "delete", "remove", "set", "update", "edit", "write",
     "install", "uninstall", "restart", "stop", "start", "enable", "disable",
@@ -51,15 +55,17 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 def validate_read_argv(executable: str, argv: Sequence[str], *, help_only: bool = False) -> ReadValidation:
     """Classify an argv without ever invoking a shell.
 
-    Help is universally discoverable for ordinary executables.  Other commands
-    require a recognizable READ verb (or options-only invocation), so an unknown
-    network CLI operation fails toward Proposal rather than automatic execution.
+    Exact ``--help`` is discoverable for ordinary executables.  Other commands
+    require a recognizable READ verb or executable-specific safe query form, so
+    unknown and options-only operations fail toward Proposal rather than execution.
     """
     exe = executable.casefold()
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}", executable):
         return ReadValidation(ReadClassification.BLOCKED, "INVALID_EXECUTABLE")
     if exe in _SHELL_EXECUTORS:
         return ReadValidation(ReadClassification.BLOCKED, "SHELL_OR_ENV_EXECUTOR")
+    if exe in _MUTATION_EXECUTABLES or exe.startswith("mkfs"):
+        return ReadValidation(ReadClassification.MUTATION, "MUTATION_EXECUTABLE")
     if len(argv) > 24 or any(not item or len(item) > 256 for item in argv):
         return ReadValidation(ReadClassification.BLOCKED, "ARGV_BOUNDS")
     if any(_METACHARACTERS.search(item) for item in argv):
@@ -69,18 +75,33 @@ def validate_read_argv(executable: str, argv: Sequence[str], *, help_only: bool 
         return ReadValidation(ReadClassification.BLOCKED, "SENSITIVE_DATA_TARGET")
     if any(item in {"-c", "--command"} for item in folded):
         return ReadValidation(ReadClassification.BLOCKED, "COMMAND_INTERPRETER_OPTION")
-    is_help = bool(folded) and any(item in {"-h", "--help", "help"} for item in folded)
+    words = tuple(item.lstrip("-").split("=", 1)[0] for item in folded if not item.startswith("/"))
+    if any(word in _MUTATION_VERBS or word.startswith("mkfs.") for word in words):
+        return ReadValidation(ReadClassification.MUTATION, "MUTATION_VERB")
+    # ``-h`` is deliberately not universal help (for example shutdown -h now).
+    # Subcommand help is safe only when every preceding word is a known READ verb.
+    is_help = folded in (("--help",), ("help",)) or (
+        len(folded) > 1 and folded[-1] == "--help"
+        and all(item in _READ_VERBS for item in folded[:-1])
+    )
     if help_only and not is_help:
         return ReadValidation(ReadClassification.BLOCKED, "HELP_FLAG_REQUIRED")
     if is_help:
         return ReadValidation(ReadClassification.READ, "CLI_HELP")
-    words = tuple(item.lstrip("-").split("=", 1)[0] for item in folded if not item.startswith("/"))
-    if any(word in _MUTATION_VERBS or word.startswith("mkfs.") for word in words):
-        return ReadValidation(ReadClassification.MUTATION, "MUTATION_VERB")
     if exe == "cat":
         return ReadValidation(ReadClassification.UNCERTAIN, "GENERIC_FILE_READ_NOT_AUTO_APPROVED")
+    if exe == "systemctl":
+        if folded and folded[0] in {"status", "show", "list-units", "list-unit-files", "is-active", "is-enabled", "is-failed"}:
+            return ReadValidation(ReadClassification.READ, "SYSTEMCTL_QUERY")
+        return ReadValidation(ReadClassification.UNCERTAIN, "SYSTEMCTL_FORM_NOT_SAFE")
+    if exe == "nvidia-smi":
+        if not folded or folded == ("-l",):
+            return ReadValidation(ReadClassification.READ, "NVIDIA_SMI_QUERY")
+        if all(item == "-l" or item.startswith(("--query-gpu=", "--format=")) for item in folded):
+            return ReadValidation(ReadClassification.READ, "NVIDIA_SMI_QUERY")
+        return ReadValidation(ReadClassification.UNCERTAIN, "NVIDIA_SMI_FORM_NOT_SAFE")
     if not folded or all(item.startswith("-") for item in folded):
-        return ReadValidation(ReadClassification.READ, "OPTIONS_ONLY_READ")
+        return ReadValidation(ReadClassification.UNCERTAIN, "OPTIONS_ONLY_UNKNOWN")
     if any(word in _READ_VERBS for word in words):
         return ReadValidation(ReadClassification.READ, "RECOGNIZED_READ_VERB")
     return ReadValidation(ReadClassification.UNCERTAIN, "UNKNOWN_OPERATION")

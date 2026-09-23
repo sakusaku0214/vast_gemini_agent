@@ -11,7 +11,7 @@ SCOPES = {
     "ディスク": "system", "system状態": "system", "システム状態": "system",
     "vast状態": "vast", "vastの状態": "vast", "vast見て": "vast",
 }
-WRITE_WORDS = ("再起動", "restart", "reset", "リセット", "停止", "止めて", "stop", "reboot", "shutdown")
+WRITE_WORDS = ("再起動", "restart", "reset", "リセット", "停止", "止めて", "stop", "reboot", "shutdown", "クロック制限", "絞って", "clock lock")
 ADVICE_WORDS = ("すべき", "必要", "候補", "した方が", "でしょう", "ですか", "？", "?")
 AGENT_WORDS = ("おかしく", "原因", "調べ", "なぜ", "なんで", "前にも", "過去", "消え")
 

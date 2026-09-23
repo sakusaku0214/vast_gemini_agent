@@ -73,4 +73,7 @@ MIGRATIONS: tuple[str, ...] = (
     """
     ALTER TABLE conversation_state ADD COLUMN last_recommended_action TEXT;
     """,
+    """
+    ALTER TABLE conversation_state ADD COLUMN write_context_host TEXT;
+    """,
 )

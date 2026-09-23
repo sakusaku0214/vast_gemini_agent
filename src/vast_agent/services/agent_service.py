@@ -18,6 +18,7 @@ from vast_agent.actions.models import (
     ProposalStatus,
     RebootParameters,
 )
+from vast_agent.actions.operation_plan import render_operation_proposal
 from vast_agent.actions.package_catalog import capability_definition
 from vast_agent.actions.preflight import package_manager_state
 from vast_agent.actions.resolver import ActionIntentResolver, InvalidPackageNameError
@@ -161,10 +162,30 @@ class AgentService:
 
         decision = route_intent(text, self.registry)
         if decision.route == Route.UNSUPPORTED_WRITE:
-            _, choices = self._resolve_host(text, decision.host, state)
+            write_host, host_source, choices = self._resolve_write_host(text, state)
             if choices:
                 return ServiceReply("hostが曖昧です: " + ", ".join(choices))
-            return ServiceReply("この操作はWRITE/Approval Phaseで対応予定")
+            if write_host is None:
+                return ServiceReply("WRITE/Approval: 対象hostまたは具体的targetを確認してください。")
+            planner = getattr(self.agent, "plan_operation", None) if self.agent else None
+            if planner is None or self.actions is None:
+                return ServiceReply("WRITE/Approval operation planning capability unavailable")
+            investigation = await asyncio.to_thread(
+                self.agent.investigate, write_host.name, self._clean(text),
+            )
+            plan = await asyncio.to_thread(
+                planner, write_host.name, host_source, self._clean(text), investigation,
+            )
+            if plan is None:
+                return ServiceReply("operation classification or target grounding is uncertain; clarification is required")
+            proposal = await asyncio.to_thread(self.actions.propose_operation, plan, str(owner))
+            state.last_host = write_host.name
+            state.write_context_host = None
+            self.conversations.save(owner, channel, state)
+            rendered = render_operation_proposal(plan, proposal.id, proposal.expires_at.isoformat())
+            if not self.actions.settings.generic_operations_enabled:
+                rendered += "\nPolicy: generic operation execution is disabled"
+            return ServiceReply(self._clean(rendered), proposal=proposal, policy="ALLOW")
         host, choices = self._resolve_host(text, decision.host, state)
         if choices:
             return ServiceReply("hostが曖昧です: " + ", ".join(choices))
@@ -177,6 +198,9 @@ class AgentService:
                 return ServiceReply("Gemini unavailable. 一般質問に回答できません。")
             answer = await asyncio.to_thread(self.agent.answer_general, self._clean(text))
             # A general turn deliberately leaves last_host and last_scope intact.
+            # It does, however, end the immediate high-confidence WRITE context.
+            state.write_context_host = None
+            self.conversations.save(owner, channel, state)
             return ServiceReply(self._clean(answer))
         if host is None:
             return ServiceReply("対象hostを指定してください。")
@@ -196,7 +220,9 @@ class AgentService:
         safe_text = self._clean(text)
         job, token = self.jobs.create(kind, host.name, safe_text)
         state.last_host = host.name if self.remember_last_host else None
-        state.last_job_id = job.id; state.last_scope = decision.scope
+        state.last_job_id = job.id
+        state.last_scope = decision.scope or ("investigation" if decision.route == Route.AGENT else None)
+        state.write_context_host = host.name
         self.conversations.save(owner, channel, state)
         self.jobs.start(job)
         lock_class = LockClass.HEAVY_READ if decision.route == Route.AGENT else LockClass.READ
@@ -306,6 +332,29 @@ class AgentService:
             except KeyError: pass
         return None, []
 
+    def _resolve_write_host(self, text: str, state: ConversationState):
+        """Allow only high-confidence, immediately grounded single-host WRITE context."""
+        folded = text.casefold()
+        matches = [host for host in self.registry.hosts.values()
+                   if any(name.casefold() in folded for name in (host.name, *host.aliases))]
+        if len(matches) > 1:
+            return None, None, [host.name for host in matches]
+        if len(matches) == 1:
+            return matches[0], "current message", []
+        concrete_target = bool(re.search(
+            r"GPU\s*[0-9]+|C\.[0-9]+|vast(?:ai)?\.service|docker\.service|libvirtd\.service",
+            text, re.I,
+        ))
+        vague_only = folded.strip() in {"そっち", "それ", "あれ", "適当に", "そっち適当に絞って"}
+        if (self.remember_last_host and state.last_host and state.last_scope
+                and state.write_context_host == state.last_host
+                and concrete_target and not vague_only and not self._is_fleet(folded)):
+            try:
+                return self.registry.resolve(state.last_host), "conversation context", []
+            except KeyError:
+                pass
+        return None, None, []
+
     @staticmethod
     def _is_read_follow_up(text: str) -> bool:
         """Recognize anaphoric or abbreviated READ questions without guessing a host.
@@ -361,6 +410,8 @@ class AgentService:
     async def _fleet(self, request: str, scope: str, state: ConversationState,
                      owner, channel) -> ServiceReply:
         job, token = self.jobs.create(f"fleet-{scope}", None, request)
+        # Fleet output is never high-confidence single-host context for a later WRITE.
+        state.last_host = None; state.write_context_host = None
         state.last_job_id = job.id; state.last_scope = scope
         self.conversations.save(owner, channel, state); self.jobs.start(job)
         semaphore = asyncio.Semaphore(self.max_parallel_hosts)

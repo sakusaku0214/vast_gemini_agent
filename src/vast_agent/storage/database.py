@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from vast_agent.actions.models import ActionProposal, ProposalStatus
+from vast_agent.actions.operation_plan import OperationPlan
 from vast_agent.jobs.models import Job, JobStatus
 from vast_agent.models.host import Host
 from vast_agent.models.observation import Observation
@@ -168,17 +169,19 @@ class Database:
 
     def save_conversation(self, owner: str, channel: str, host: str | None,
                           job_id: int | None, scope: str | None,
-                          recommended_action: str | None = None) -> None:
+                          recommended_action: str | None = None,
+                          write_context_host: str | None = None) -> None:
         with self.connect() as db:
             db.execute(
                 "INSERT INTO conversation_state(owner_id,channel_id,last_host,last_job_id,last_scope,"
-                "updated_at,last_recommended_action) VALUES(?,?,?,?,?,?,?) "
+                "updated_at,last_recommended_action,write_context_host) VALUES(?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(owner_id,channel_id) "
                 "DO UPDATE SET last_host=excluded.last_host,last_job_id=excluded.last_job_id,"
                 "last_scope=excluded.last_scope,updated_at=excluded.updated_at,"
-                "last_recommended_action=excluded.last_recommended_action",
+                "last_recommended_action=excluded.last_recommended_action,"
+                "write_context_host=excluded.write_context_host",
                 (owner, channel, host, job_id, scope, datetime.now(UTC).isoformat(),
-                 recommended_action),
+                 recommended_action, write_context_host),
             )
 
     def create_action_proposal(self, proposal: ActionProposal) -> int:
@@ -201,6 +204,23 @@ class Database:
             db.row_factory = sqlite3.Row
             row = db.execute("SELECT * FROM action_proposals WHERE id=?", (proposal_id,)).fetchone()
         return dict(row) if row else None
+
+    def create_operation_proposal(
+        self, plan: OperationPlan, *, status: ProposalStatus, created_at: datetime,
+        expires_at: datetime, created_by: str, preflight_json: str,
+        preflight_fingerprint: str,
+    ) -> int:
+        """Persist immutable generic operation data in the existing approval ledger."""
+        with self.connect() as db:
+            cursor = db.execute(
+                "INSERT INTO action_proposals(host,action_type,params_json,risk_class,status,"
+                "created_at,expires_at,created_by,preflight_json,preflight_fingerprint) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (plan.host, "EXECUTE_APPROVED_ARGV", plan.model_dump_json(), "DANGEROUS", status,
+                 created_at.isoformat(), expires_at.isoformat(), created_by, preflight_json,
+                 preflight_fingerprint),
+            )
+            return int(cursor.lastrowid)
 
     def approve_action_proposal(self, proposal_id: int, approver: str, now: datetime) -> bool:
         """Atomic single-winner approval and consumption claim."""

@@ -26,6 +26,10 @@ class TypedActionExecutor:
         self._remote = remote
         self._settings = settings
 
+    @property
+    def remote(self) -> Executor:
+        return self._remote
+
     def execute(self, host: Host, request: ActionRequest) -> ToolResult:
         ActionRegistry().validate_consistency(request)
         if request.action_type == ActionType.HOST_REBOOT:
