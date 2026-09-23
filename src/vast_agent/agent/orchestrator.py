@@ -12,6 +12,7 @@ from vast_agent.actions.operation_plan import OperationPlan
 from vast_agent.agent.evidence import compact_evidence
 from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import GeminiClient
+from vast_agent.agent.generic_read import ReadClassification, validate_read_argv
 from vast_agent.agent.host_read import FUNCTION_DECLARATIONS, HOST_READ_CAPABILITIES
 from vast_agent.agent.investigation_session import InvestigationSession, StopReason
 from vast_agent.agent.models import InvestigationResult
@@ -166,18 +167,31 @@ class InvestigationAgent:
             ensure_ascii=False,
         )
         result.ground_from_validated_evidence(evidence)
+        result._display_evidence = "\n\n".join(
+            item.relevant_excerpt for item in session.evidence if item.relevant_excerpt
+        )[:4000]
+        paths = [
+            item.facts.get("path") for item in session.evidence
+            if item.source == "query_executable" and isinstance(item.facts.get("path"), str)
+        ]
+        result._context_evidence = {
+            "relevant_excerpt": result._display_evidence,
+            "executable_paths": paths[:4],
+        }
         return result
 
     @staticmethod
     def _fallback_from_evidence(session: InvestigationSession, *, summary: str,
                                 stop_reason: StopReason) -> InvestigationResult:
-        return InvestigationResult(
+        result = InvestigationResult(
             summary=summary,
             findings=[item.summary for item in session.evidence],
             missing_evidence=["valid final synthesis"],
             recommended_action="NONE",
             stop_reason=stop_reason,
         )
+        InvestigationAgent._attach_validated_grounding(result, session)
+        return result
 
     def _synthesize_from_evidence(
         self,
@@ -403,6 +417,31 @@ class InvestigationAgent:
                         "untrusted_evidence_record": record.model_dump(mode="json"),
                     }, ensure_ascii=False)}],
                 })
+                continuation = self._discovery_continuation(call.name, call.arguments, output)
+                if continuation is not None and session.can_call():
+                    path, argv = continuation
+                    continuation_args = {
+                        "host": host, "executable": path, "argv": argv,
+                        "requires_sudo": False, "reason": "continue the requested READ after PATH discovery",
+                    }
+                    continuation_output = self.functions.execute(
+                        "run_readonly_argv", continuation_args, host,
+                    )
+                    continuation_record = compact_evidence(
+                        "run_readonly_argv", continuation_output, max_chars=1800,
+                    )
+                    if session.add(
+                        "run_readonly_argv", continuation_args, continuation_record,
+                        trace_arguments=continuation_args,
+                    ):
+                        inputs.append({
+                            "type": "function_result", "name": "run_readonly_argv",
+                            "call_id": f"{call.call_id}:continuation",
+                            "result": [{"type": "text", "text": json.dumps({
+                                "untrusted_evidence_record": continuation_record.model_dump(mode="json"),
+                                "continued_from": call.call_id,
+                            }, ensure_ascii=False)}],
+                        })
             if stop_execution:
                 break
         if cancellation and cancellation.cancelled:
@@ -417,6 +456,20 @@ class InvestigationAgent:
         result = self._synthesize_from_evidence(session, inputs, final_reason)
         _log_completion(session)
         return result
+
+    @staticmethod
+    def _discovery_continuation(name, arguments, output) -> tuple[str, list[str]] | None:
+        """Execute an already-selected READ immediately after absolute-path discovery."""
+        if name != "query_executable":
+            return None
+        argv = arguments.get("continuation_argv")
+        payload = output.get("untrusted_evidence", {})
+        path = payload.get("path") if isinstance(payload, dict) else None
+        if not isinstance(path, str) or not isinstance(argv, list) or not argv:
+            return None
+        if validate_read_argv(path, argv).classification != ReadClassification.READ:
+            return None
+        return path, [str(value) for value in argv]
 
     def synthesize_fleet(
         self, goal: str, hosts: tuple[str, ...], results: dict[str, InvestigationResult],

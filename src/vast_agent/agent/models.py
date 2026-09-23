@@ -56,6 +56,16 @@ class PackageQueryArgs(HostArgument):
 
 class ExecutableQueryArgs(HostArgument):
     executable_name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
+    # When discovery is needed only to resolve PATH, carry the already-decided READ
+    # along with it.  The orchestrator validates this again before executing it.
+    continuation_argv: list[str] = Field(default_factory=list, max_length=24)
+
+    @field_validator("continuation_argv")
+    @classmethod
+    def bounded_continuation(cls, value: list[str]) -> list[str]:
+        if any(not argument or len(argument) > 256 for argument in value):
+            raise ValueError("argv elements must be non-empty and at most 256 characters")
+        return value
 
 
 class CliArgvArgs(HostArgument):
@@ -198,6 +208,9 @@ class InvestigationResult(BaseModel):
     # cannot be supplied by model JSON and therefore carry provenance for operation grounding.
     _validated_evidence: str = PrivateAttr(default="")
     _validated_numeric_values: frozenset[str] = PrivateAttr(default_factory=frozenset)
+    # Application-owned, bounded evidence for rendering and short-lived conversation reuse.
+    _display_evidence: str = PrivateAttr(default="")
+    _context_evidence: dict[str, object] = PrivateAttr(default_factory=dict)
 
     def ground_from_validated_evidence(self, evidence: str) -> None:
         self._validated_evidence = evidence[:8000]

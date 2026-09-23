@@ -41,6 +41,15 @@ class ContextAwareAgent(ContextAgent):
         return InvestigationResult(summary="前回の証拠を踏まえて継続調査", confidence="high")
 
 
+class EvidenceAgent(ContextAgent):
+    def investigate(self, host, goal, context=None):
+        self.calls.append((host, goal))
+        result = InvestigationResult(summary="root crontabを取得しました", confidence="high")
+        result._display_evidence = "0 * * * * /opt/vast/check.sh\n@reboot /opt/gpu/monitor"
+        result._context_evidence = {"relevant_excerpt": result._display_evidence}
+        return result
+
+
 class UptimeFleetAgent(ContextAgent):
     def investigate(self, host, goal):
         self.calls.append((host, goal))
@@ -118,6 +127,21 @@ def test_two_gpu_followup_uses_immediate_host_context(tmp_path):
     reply = asyncio.run(service.handle_question("二枚あるでしょう？", 1, 2))
     assert reply.job_id is not None
     assert agent.calls[-1] == ("garage-h12ssl-nt", "二枚あるでしょう？")
+
+
+def test_requested_crontab_content_is_rendered_and_reused_in_current_channel(tmp_path):
+    agent = EvidenceAgent()
+    service = make_service(tmp_path, agent)
+
+    first = asyncio.run(service.handle_question(
+        "h12sslのsudo crontabに何が入ってるか一覧見せて", 1, 2,
+    ))
+    follow_up = asyncio.run(service.handle_question("一覧をdiscordへ流せない？", 1, 2))
+
+    assert "0 * * * * /opt/vast/check.sh" in first.text
+    assert "@reboot /opt/gpu/monitor" in follow_up.text
+    assert "cannot send" not in follow_up.text.casefold()
+    assert len(agent.calls) == 1
 
 
 def test_fleet_vnstat_is_ranked_and_partial_failure_is_preserved(tmp_path):

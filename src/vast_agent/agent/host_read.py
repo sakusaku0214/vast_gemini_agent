@@ -56,7 +56,7 @@ HOST_READ_CAPABILITIES: Final[dict[str, HostReadCapability]] = {
         HostReadCapability("collect_evidence", "Collect a fixed type of read-only evidence.", "diagnostics", CollectEvidenceArgs, "legacy"),
         HostReadCapability("get_recent_incidents", "Read compact incident summaries when history is relevant.", "history", RecentIncidentsArgs, "legacy"),
         HostReadCapability("query_package", "Check whether one validated Debian package is installed.", "packages", PackageQueryArgs, "generic"),
-        HostReadCapability("query_executable", "Resolve one validated executable name without exposing PATH.", "executables", ExecutableQueryArgs, "generic"),
+        HostReadCapability("query_executable", "Resolve one validated executable name without exposing PATH. Include continuation_argv when PATH discovery should immediately continue the requested READ.", "executables", ExecutableQueryArgs, "generic"),
         HostReadCapability("query_cli_help", "Read bounded CLI help using executable plus argv; supports typed non-interactive sudo, never shell.", "discovery", CliArgvArgs, "generic"),
         HostReadCapability("run_readonly_argv", "Run a validated READ argv, optionally with typed non-interactive sudo; mutations become Proposal candidates.", "discovery", CliArgvArgs, "generic"),
         HostReadCapability("query_service", "Read one validated systemd service state.", "services", ServiceQueryArgs, "generic"),
