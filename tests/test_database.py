@@ -14,7 +14,7 @@ from vast_agent.storage.database import Database
 
 def test_schema_observation_and_incident_dedup(tmp_path):
     database = Database(tmp_path / "agent.db")
-    assert database.migrate() == 3
+    assert database.migrate() == 4
     host = Host(name="node", address="192.0.2.2", ssh_user="user")
     database.upsert_host(host)
     assert database.save_observation(Observation(host="node", ssh_ok=True)) > 0
@@ -23,7 +23,7 @@ def test_schema_observation_and_incident_dedup(tmp_path):
     assert first == second
     with sqlite3.connect(database.path) as db:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert {"schema_version", "hosts", "observations", "tool_runs", "incidents"} <= tables
+        assert {"schema_version", "hosts", "observations", "tool_runs", "incidents", "write_proposals"} <= tables
 
 
 def test_inspection_persists_runs_logs_and_deduplicates_incident(tmp_path, host):
