@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+CONTINUE_MARKER = "さらに深掘りしますか？"
+
+
+def wants_continue_button(text: str) -> bool:
+    return CONTINUE_MARKER in text and "続けて" in text
+
 
 def split_messages(text: str, limit: int = 1900) -> list[str]:
     """Split on lines for Discord's 2000-character message limit."""
