@@ -99,14 +99,24 @@ def _api_key(paths: RuntimePaths) -> str | None:
 
 
 def _secrets(paths: RuntimePaths) -> dict[str, str]:
-    values: dict[str, str] = {}
+    # Environment variables are fallback defaults. The runtime secrets file is
+    # intentionally authoritative so this agent can use its own credentials
+    # without changing machine-wide/user-wide environment variables.
+    keys = (
+        "GEMINI_API_KEY",
+        "DISCORD_BOT_TOKEN",
+        "DISCORD_CHANNEL_ID",
+        "DISCORD_OWNER_USER_ID",
+    )
+    values = {key: os.environ[key] for key in keys if os.environ.get(key)}
+
     if paths.secrets_file.exists():
         for line in paths.secrets_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1); values[key.strip()] = value.strip().strip("'\"")
-    for key in ("GEMINI_API_KEY", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID"):
-        if os.environ.get(key): values[key] = os.environ[key]
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip().strip("'\"")
+
     return values
 
 
