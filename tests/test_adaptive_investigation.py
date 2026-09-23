@@ -396,27 +396,39 @@ def test_cli_evidence_strips_ansi_and_deduplicates_display(tmp_path, host):
     assert result._display_evidence.count("42  rented") == 1
 
 
-def test_display_evidence_selects_machine_table_not_internal_json_or_help(host):
+def test_display_evidence_selects_primary_cli_not_supporting_or_alternate_reads(host):
     session = InvestigationSession(
-        target_host=host.name, goal="全体のレント状況をvastai show machinesで見てdiscordへ共有して",
+        target_host=host.name, goal="widgetctl list nodes の結果を共有して",
     )
-    for argv, stdout, source in (
-        (["--help"], "HELP giant usage", "query_cli_help"),
-        (["show", "machines", "--raw"], '[{"id": 42, "rented": true}]', "run_readonly_argv"),
-        (["show", "machines"], "ID  RENTED\n42  true", "run_readonly_argv"),
-    ):
-        output = {"untrusted_evidence": {
-            "status": "completed", "executable": "vastai", "argv": argv, "stdout": stdout,
-        }}
+    reads = (
+        ("query_executable", [], "/opt/tools/widgetctl", "executable discovery"),
+        ("query_cli_help", ["--help"], "HELP giant usage", "syntax discovery"),
+        ("run_readonly_argv", ["list", "nodes", "--json"],
+         '[{"node": "alpha", "state": "ready"}]', "parser fallback"),
+        ("run_readonly_argv", ["list", "nodes"], "NODE   STATE\nalpha  ready", "requested data"),
+    )
+    for source, argv, stdout, reason in reads:
+        executable = "widgetctl"
+        payload = {
+            "status": "completed", "executable": executable, "argv": argv, "stdout": stdout,
+        }
+        if source == "query_executable":
+            payload = {"status": "available", "path": stdout}
+        output = {"untrusted_evidence": payload}
         record = compact_evidence(source, output, 1800)
-        assert session.add(source, {"executable": "vastai", "argv": argv}, record)
+        if source == "query_executable":
+            record = record.model_copy(update={"relevant_excerpt": stdout})
+        assert session.add(source, {
+            "executable": executable, "argv": argv, "reason": reason,
+        }, record)
 
     result = InvestigationResult(summary="1 machine is rented")
     InvestigationAgent._attach_validated_grounding(result, session)
 
-    assert result._display_evidence == "ID  RENTED\n42  true"
+    assert result._display_evidence == "NODE   STATE\nalpha  ready"
     assert "HELP" not in result._display_evidence
-    assert '"id"' not in result._display_evidence
+    assert '"node"' not in result._display_evidence
+    assert "/opt/tools" not in result._display_evidence
 
 
 def test_session_bounds_cache_and_evidence_compaction():

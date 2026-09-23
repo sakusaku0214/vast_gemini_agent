@@ -188,24 +188,61 @@ class InvestigationAgent:
         goal = session.goal.casefold()
         wants_help = any(word in goal for word in ("help", "ヘルプ", "使い方", "構文"))
         records = []
+        cli_groups = {}
         for item in session.evidence:
             argv = [str(value).casefold() for value in item.arguments.get("argv", [])]
+            # Discovery establishes how another READ can run; it is not the data
+            # the user requested. Help has the same supporting role unless syntax
+            # itself was requested.
+            if item.source == "query_executable":
+                continue
             if (item.source == "query_cli_help" or "--help" in argv) and not wants_help:
                 continue
-            records.append(item)
+            executable = str(item.arguments.get("executable", "")).rsplit("/", 1)[-1].casefold()
+            if item.source == "run_readonly_argv" and executable and item.relevant_excerpt:
+                semantic_argv, presentation = InvestigationAgent._semantic_cli_argv(argv)
+                cli_groups.setdefault((executable, semantic_argv), []).append(
+                    (item, presentation),
+                )
+            else:
+                records.append(item)
 
-        # A rendered `vastai show machines` table is the requested deliverable.
-        # JSON and discovery/help reads remain available for synthesis, but are
-        # redundant (and often huge) display evidence when that table exists.
-        machine_tables = [
-            item for item in records
-            if "vastai" in str(item.arguments.get("executable", "")).casefold()
-            and [str(value).casefold() for value in item.arguments.get("argv", [])]
-            == ["show", "machines"]
-        ]
-        if machine_tables:
-            return machine_tables
+        for alternatives in cli_groups.values():
+            # Equivalent output formats support the same answer. Prefer the
+            # requested format, otherwise the least transformed human-readable
+            # result, without naming any product or command.
+            records.append(max(
+                alternatives,
+                key=lambda candidate: (
+                    sum(token in goal for token in candidate[1]),
+                    -len(candidate[1]),
+                ),
+            )[0])
         return records
+
+    @staticmethod
+    def _semantic_cli_argv(argv: list[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Separate command semantics from generic output-format modifiers."""
+        semantic = []
+        presentation = []
+        value_options = {"--format", "--output", "-o"}
+        standalone = {"--json", "--raw", "--yaml", "--csv", "--table"}
+        index = 0
+        while index < len(argv):
+            value = argv[index]
+            if value in value_options:
+                presentation.append(value)
+                if index + 1 < len(argv):
+                    presentation.append(argv[index + 1])
+                    index += 1
+                index += 1
+                continue
+            if value in standalone or value.startswith(("--format=", "--output=")):
+                presentation.append(value)
+            else:
+                semantic.append(value)
+            index += 1
+        return tuple(semantic), tuple(presentation)
 
     @staticmethod
     def _fallback_from_evidence(session: InvestigationSession, *, summary: str,
