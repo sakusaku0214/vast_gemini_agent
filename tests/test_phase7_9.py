@@ -368,3 +368,43 @@ def test_failed_write_is_single_use(tmp_path):
     assert len(executor.calls) == 1
     assert proposals.get(proposal.id).status == "FAILED"
     assert "承認待ちではありません" in second.text
+
+
+
+def test_ssh_known_hosts_option_has_no_embedded_quotes(tmp_path, monkeypatch, host):
+    known = tmp_path / "folder with spaces" / "known_hosts"
+    known.parent.mkdir()
+    known.write_text("", encoding="utf-8")
+    captured = {}
+
+    class Proc:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return b"ok", b""
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 1
+
+        def kill(self):
+            self.returncode = 1
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        return Proc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = SSHExecutor(known).execute(host, ("nvidia-smi",), 5)
+
+    assert result.success
+    option = next(
+        captured["args"][i + 1]
+        for i, value in enumerate(captured["args"][:-1])
+        if value == "-o" and captured["args"][i + 1].startswith("UserKnownHostsFile=")
+    )
+    assert option == f"UserKnownHostsFile={known.resolve().as_posix()}"
+    assert '"' not in option
