@@ -85,7 +85,11 @@ class AgentService:
         previous_turn = None
         if state.last_job_id is not None:
             previous = self.jobs.database.get_job(state.last_job_id)
-            if previous and previous.get("status") == "SUCCEEDED":
+            if (
+                previous
+                and previous.get("status") == "SUCCEEDED"
+                and self._is_contextworthy_result(str(previous.get("result_summary") or ""))
+            ):
                 previous_turn = {
                     "request": self._clean(str(previous.get("request_summary") or ""))[:500],
                     "answer": self._clean(str(previous.get("result_summary") or ""))[:1000],
@@ -116,7 +120,8 @@ class AgentService:
         try:
             summary = await asyncio.to_thread(work)
             summary = self._clean(summary)
-            self.jobs.finish(job, summary)
+            error_code = self._agent_error_code(summary)
+            self.jobs.finish(job, summary, error_code)
         except Exception:
             summary = "調査を完了できませんでした。詳細はagent logを確認してください。"
             self.jobs.finish(job, summary, "SERVICE_ERROR")
@@ -198,6 +203,20 @@ class AgentService:
             f"stderr:\n{stderr or '(empty)'}"
         )
         return ServiceReply(self._clean(text))
+
+    @staticmethod
+    def _agent_error_code(summary: str) -> str | None:
+        if summary == "Geminiとの通信に失敗しました。":
+            return "GEMINI_ERROR"
+        if summary.startswith("操作上限に達しました。"):
+            return "AGENT_LIMIT"
+        if summary == "調査はキャンセルされました。":
+            return "CANCELLED"
+        return None
+
+    @classmethod
+    def _is_contextworthy_result(cls, summary: str) -> bool:
+        return bool(summary.strip()) and cls._agent_error_code(summary) is None
 
     @staticmethod
     def _is_cancel_request(text: str) -> bool:
