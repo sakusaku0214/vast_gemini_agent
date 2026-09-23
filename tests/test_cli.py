@@ -70,3 +70,48 @@ def test_start_respects_discord_disabled(tmp_path, capsys):
     )
     assert main(["--runtime", str(tmp_path), "start"]) == 2
     assert "disabled" in capsys.readouterr().err
+
+
+
+def test_runtime_secrets_file_overrides_environment(tmp_path, monkeypatch):
+    from vast_agent.app import _secrets
+    from vast_agent.paths import RuntimePaths
+
+    paths = RuntimePaths(tmp_path)
+    paths.create()
+    paths.secrets_file.write_text(
+        "GEMINI_API_KEY=file-key\n"
+        "DISCORD_BOT_TOKEN=file-token\n"
+        "DISCORD_CHANNEL_ID=200\n"
+        "DISCORD_OWNER_USER_ID=100\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("GEMINI_API_KEY", "env-key")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "env-token")
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", "999")
+    monkeypatch.setenv("DISCORD_OWNER_USER_ID", "888")
+
+    values = _secrets(paths)
+
+    assert values["GEMINI_API_KEY"] == "file-key"
+    assert values["DISCORD_BOT_TOKEN"] == "file-token"
+    assert values["DISCORD_CHANNEL_ID"] == "200"
+    assert values["DISCORD_OWNER_USER_ID"] == "100"
+
+
+def test_environment_is_used_when_runtime_secret_is_absent(tmp_path, monkeypatch):
+    from vast_agent.app import _secrets
+    from vast_agent.paths import RuntimePaths
+
+    paths = RuntimePaths(tmp_path)
+    paths.create()
+    paths.secrets_file.write_text("DISCORD_BOT_TOKEN=file-token\n", encoding="utf-8")
+
+    monkeypatch.setenv("GEMINI_API_KEY", "env-key")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "env-token")
+
+    values = _secrets(paths)
+
+    assert values["GEMINI_API_KEY"] == "env-key"
+    assert values["DISCORD_BOT_TOKEN"] == "file-token"
