@@ -56,6 +56,62 @@ class ContinueView(discord.ui.View):
                 await channel.send(chunk)
 
 
+class ProposalView(discord.ui.View):
+    def __init__(self, guard: DiscordGuard, service, proposal_id: int) -> None:
+        super().__init__(timeout=1800)
+        self.guard = guard
+        self.service = service
+        self.proposal_id = proposal_id
+
+    def _authorized(self, interaction: discord.Interaction) -> bool:
+        channel = interaction.channel
+        return (
+            self.guard.accepts_interaction(interaction)
+            and channel is not None
+            and int(channel.id) == self.guard.channel_id
+        )
+
+    def _disable_all(self) -> None:
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+
+    @discord.ui.button(label="承認", style=discord.ButtonStyle.success)
+    async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._authorized(interaction):
+            await interaction.response.send_message("OWNERのみ操作できます。", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        reply = await self.service.handle_question(
+            f"承認 #{self.proposal_id}",
+            self.guard.owner_id,
+            self.guard.channel_id,
+        )
+        self._disable_all()
+        await interaction.edit_original_response(view=self)
+        channel = interaction.channel
+        if channel is not None:
+            for chunk in split_messages(reply.text):
+                await channel.send(chunk)
+
+    @discord.ui.button(label="拒否", style=discord.ButtonStyle.danger)
+    async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._authorized(interaction):
+            await interaction.response.send_message("OWNERのみ操作できます。", ephemeral=True)
+            return
+
+        reply = await self.service.handle_question(
+            f"拒否 #{self.proposal_id}",
+            self.guard.owner_id,
+            self.guard.channel_id,
+        )
+        self._disable_all()
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(reply.text)
+
+
+
 def create_bot(owner_id: int, channel_id: int, service) -> discord.Client:
     intents = discord.Intents.default(); intents.message_content = True
     client = discord.Client(intents=intents)
@@ -64,6 +120,7 @@ def create_bot(owner_id: int, channel_id: int, service) -> discord.Client:
         guard,
         service,
         continue_view_factory=lambda job_id: ContinueView(guard, service, job_id),
+        proposal_view_factory=lambda proposal_id: ProposalView(guard, service, proposal_id),
     )
 
     @client.event
