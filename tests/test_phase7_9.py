@@ -204,13 +204,19 @@ def test_ssh_cancellation_terminates_real_child(tmp_path, monkeypatch, host):
 
 
 def test_runtime_duplicate_and_stale_pid_safety(tmp_path, monkeypatch):
-    runtime = RuntimeManager(RuntimePaths(tmp_path))
+    paths = RuntimePaths(tmp_path)
+    paths.create()
+    paths.process_state.write_text('{"pid":123}', encoding="utf-8")
+    runtime = RuntimeManager(paths)
+
     monkeypatch.setattr(runtime, "status", lambda: ("RUNNING", {"pid": 123}))
     assert runtime.start() == (False, "already running")
+
     monkeypatch.setattr(runtime, "status", lambda: ("STOPPED / stale pid", {"pid": 123}))
     ok, detail = runtime.stop()
-    assert not ok
-    assert "refusing" in detail
+    assert ok
+    assert detail == "stale PID state cleared"
+    assert not paths.process_state.exists()
 
 
 def test_secret_redaction_at_service_database_and_logging(tmp_path):
