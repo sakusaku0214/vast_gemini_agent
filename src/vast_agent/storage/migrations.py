@@ -56,6 +56,7 @@ MIGRATIONS: tuple[str, ...] = (
       host TEXT NOT NULL,
       argv_json TEXT NOT NULL,
       reason TEXT NOT NULL,
+      timeout INTEGER NOT NULL,
       status TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
