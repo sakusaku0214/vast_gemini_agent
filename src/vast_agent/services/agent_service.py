@@ -10,6 +10,7 @@ from vast_agent.actions.capability_bridge import (
     assess_gap,
     request_for_gap,
 )
+from vast_agent.actions.grounding import action_target_is_grounded
 from vast_agent.actions.models import (
     ActionRequest,
     ActionType,
@@ -94,6 +95,26 @@ class AgentService:
                 action = self.action_resolver.resolve(text, state.last_host)
             except InvalidPackageNameError:
                 return ServiceReply("INVALID_PACKAGE_NAME: package名の形式が不正です。")
+
+        # Deterministic patterns are only a fast path.  When they do not match, Gemini may
+        # interpret natural language into an existing typed action, but only for a host named
+        # in this turn.  The interpreter performs target-specific lexical grounding and has no
+        # tools or execution path; every accepted request still enters the normal proposal flow.
+        if action is None and self.actions is not None and self.agent is not None:
+            interpret = getattr(self.agent, "interpret_action", None)
+            if interpret is not None:
+                try:
+                    explicit_host = self.registry.resolve_in_text(text)
+                except KeyError:
+                    explicit_host = None
+                if explicit_host is not None:
+                    candidate = await asyncio.to_thread(
+                        interpret, explicit_host.name, self._clean(text),
+                    )
+                    if (candidate is not None
+                            and candidate.host == explicit_host.name
+                            and action_target_is_grounded(candidate, text)):
+                        action = candidate
 
         if action is not None:
             if self.actions is None:

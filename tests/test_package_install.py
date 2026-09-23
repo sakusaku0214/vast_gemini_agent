@@ -357,6 +357,40 @@ class GapAgent:
         )
 
 
+class FlexibleInstallAgent:
+    def __init__(self):
+        self.calls = []
+
+    def interpret_action(self, host, text):
+        self.calls.append((host, text))
+        return ActionRequest(
+            host=host, action_type=ActionType.PACKAGE_INSTALL,
+            parameters=PackageInstallParameters(
+                package_name="nvitop", reason="explicit user request",
+            ),
+        )
+
+
+def test_service_uses_flexible_interpretation_as_proposal_only_fallback(tmp_path):
+    db, actions, remote, preflight = coordinator(tmp_path)
+    agent = FlexibleInstallAgent()
+    service = AgentService(
+        actions.hosts, object(), remote, JobManager(db), ConversationStore(db),
+        agent=agent, actions=actions,
+    )
+
+    reply = asyncio.run(service.handle_question(
+        "garage-magへnvitopを導入しておいて", 7, 9,
+    ))
+
+    assert agent.calls == [("garage-mag", "garage-magへnvitopを導入しておいて")]
+    assert reply.proposal is not None
+    assert reply.proposal.status == "PENDING"
+    assert reply.proposal.parameters.package_name == "nvitop"
+    assert preflight.calls == 1
+    assert remote.calls == []
+
+
 @pytest.mark.parametrize(("text", "status", "proposal_count"), [
     ("garage-magの昨日の通信量見て", "missing", 0),
     # A stubbed model gap has no session READ evidence and must fail closed.

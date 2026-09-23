@@ -118,3 +118,16 @@ If a live tool returns an error, say that retrieval failed and never substitute 
 For search summaries, distinguish conflicting sources and include concise source titles and URLs when
 present. If weather has no location and the tool requests clarification, ask for the location. Your
 response is plain text, not JSON, and must be at most 1200 characters."""
+
+
+ACTION_INTENT_PROMPT = """Interpret whether the current user message explicitly requests one mutation.
+This is classification only: never execute anything, generate argv or shell, infer a target, correct a
+spelling, or use conversation history. Select only an existing action_type: PACKAGE_INSTALL,
+RESTART_VAST_SERVICE, RESTART_DOCKER_SERVICE, RESTART_LIBVIRT_SERVICE, RESTART_VAST_CONTAINER,
+GPU_RESET, VM_MODE_ENABLE, VM_MODE_DISABLE, or HOST_REBOOT. Otherwise use null. Copy target values
+exactly from the current user message. Parameters must use the existing typed shape: package_install
+(package_name, expected_capability=null, reason="explicit user request"), service (service), container
+(container), gpu (gpu_index), vm (mode), or reboot (assessment="HOST_REBOOT_CANDIDATE"). Advice,
+questions, vague software categories, recommendations, and references such as 'that' are not explicit
+mutation requests and must produce null. Return exactly one raw JSON object with action_type and
+parameters; no markdown or explanation."""
