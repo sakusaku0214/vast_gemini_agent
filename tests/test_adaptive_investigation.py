@@ -7,7 +7,7 @@ from vast_agent.agent.evidence import compact_evidence
 from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import ScriptedGeminiClient
 from vast_agent.agent.investigation_session import InvestigationSession, StopReason
-from vast_agent.agent.models import AgentResponse, CapabilityGap
+from vast_agent.agent.models import AgentResponse, CapabilityGap, InvestigationResult
 from vast_agent.agent.orchestrator import InvestigationAgent
 from vast_agent.agent.prompts import SYSTEM_PROMPT
 from vast_agent.config import GeminiSettings, HostRegistry
@@ -377,6 +377,23 @@ def test_failed_read_is_missing_evidence_with_adaptive_failure_kind():
     assert record.status == "evidence_missing"
     assert record.missing_evidence == ["permission_denied"]
     assert "requires_sudo=true" in record.summary
+
+
+def test_cli_evidence_strips_ansi_and_deduplicates_display(tmp_path, host):
+    output = {"untrusted_evidence": {
+        "status": "completed", "executable": "/usr/bin/tool", "argv": ["show"],
+        "stdout": "\x1b[40m\x1b[97mid  state\x1b[0m\n42  rented\n",
+    }}
+    record = compact_evidence("run_readonly_argv", output, 1800)
+    assert record.relevant_excerpt == "id  state\n42  rented"
+    assert "\x1b" not in record.summary
+
+    session = InvestigationSession(target_host=host.name, goal="show")
+    assert session.add("run_readonly_argv", {"argv": ["show"]}, record)
+    assert session.add("run_readonly_argv", {"argv": ["list"]}, record)
+    result = InvestigationResult(summary="done")
+    InvestigationAgent._attach_validated_grounding(result, session)
+    assert result._display_evidence.count("42  rented") == 1
 
 
 def test_session_bounds_cache_and_evidence_compaction():

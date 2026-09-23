@@ -17,6 +17,12 @@ def call(name, arguments, call_id):
     }])
 
 
+def calls(*items):
+    return AgentResponse(steps=[{
+        "type": "function_call", "name": name, "arguments": arguments, "id": call_id,
+    } for name, arguments, call_id in items])
+
+
 def answer():
     return AgentResponse(output_text=json.dumps({
         "summary": "Vast machine is rented", "findings": ["machine 42 rented=true"],
@@ -103,6 +109,68 @@ def test_discovered_path_immediately_continues_requested_read_without_reasoning_
 
     assert result.summary == "Vast machine is rented"
     assert (path, "show", "machines") in remote.calls
+    assert client.calls == 2
+
+
+def test_discovery_recovers_prior_safe_read_without_model_continuation(tmp_path, host):
+    db = Database(tmp_path / "db.sqlite")
+    db.migrate()
+    remote = UserPathCliRemote()
+    functions = FunctionExecutor(
+        HostRegistry(hosts={host.name: host}), InspectionService(db, tmp_path / "logs"), db, remote,
+    )
+    path = f"/home/{host.ssh_user}/.local/bin/vastai"
+    client = ScriptedGeminiClient([
+        call("run_readonly_argv", {
+            "host": host.name, "executable": "vastai", "argv": ["show", "machines"],
+            "reason": "read requested rental state",
+        }, "1"),
+        call("query_executable", {
+            "host": host.name, "executable_name": "vastai",
+        }, "2"),
+        answer(),
+    ])
+
+    InvestigationAgent(
+        client, functions, db, GeminiSettings(max_llm_calls=3, max_agent_steps=3),
+    ).investigate(host.name, "vast cliでレント状況を確認")
+
+    assert (path, "show", "machines") in remote.calls
+    assert client.calls == 3
+
+
+def test_first_discovery_carries_selected_safe_read_without_continuation(tmp_path, host):
+    db = Database(tmp_path / "db.sqlite")
+    db.migrate()
+    remote = UserPathCliRemote()
+    functions = FunctionExecutor(
+        HostRegistry(hosts={host.name: host}), InspectionService(db, tmp_path / "logs"), db, remote,
+    )
+    path = f"/home/{host.ssh_user}/.local/bin/vastai"
+    client = ScriptedGeminiClient([
+        calls(
+            ("query_executable", {
+                "host": host.name, "executable_name": "vastai",
+            }, "discover"),
+            ("run_readonly_argv", {
+                "host": host.name, "executable": "vastai", "argv": ["show", "machines"],
+                "requires_sudo": False, "reason": "read requested rental state",
+            }, "planned-read"),
+        ),
+        answer(),
+    ])
+
+    agent = InvestigationAgent(
+        client, functions, db, GeminiSettings(max_llm_calls=2, max_agent_steps=2),
+    )
+    result = agent.investigate(host.name, "vast cliでレント状況を確認")
+
+    assert result.summary == "Vast machine is rented"
+    assert (path, "show", "machines") in remote.calls
+    assert ("vastai", "show", "machines") not in remote.calls
+    assert agent.last_session.trace()["selected_tools"] == [
+        "query_executable", "run_readonly_argv",
+    ]
     assert client.calls == 2
 
 

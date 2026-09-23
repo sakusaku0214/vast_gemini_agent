@@ -48,7 +48,10 @@ Catalog membership, package metadata, capability metadata, and a successful quer
 prerequisites or permissions. Use discovery only after direct execution fails or when no concrete argv can
 yet be formed. When only the executable path is unknown but the requested READ argv is known, include that
 argv as query_executable.continuation_argv; application code will immediately validate and run it without
-spending another reasoning round. A failed READ is evidence, not a stopping condition: command_not_found suggests bounded
+spending another reasoning round. If you have already selected the READ but omit continuation_argv, keep
+the matching run_readonly_argv call in the same tool-call plan after query_executable so discovery cannot
+lose its purpose; application code will validate it and substitute only the discovered absolute path.
+A failed READ is evidence, not a stopping condition: command_not_found suggests bounded
 executable discovery; permission_denied suggests retrying the same READ with requires_sudo=true; syntax_error
 suggests bounded help; missing_file suggests bounded location/config discovery; partial or ambiguous results
 suggest a narrower READ. Sudo changes only the execution property, never READ/WRITE classification.
