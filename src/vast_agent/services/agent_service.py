@@ -82,6 +82,15 @@ class AgentService:
             return ServiceReply("Gemini unavailable: GEMINI_API_KEY is not configured.")
 
         safe_text = self._clean(text)
+        previous_turn = None
+        if state.last_job_id is not None:
+            previous = self.jobs.database.get_job(state.last_job_id)
+            if previous and previous.get("status") == "SUCCEEDED":
+                previous_turn = {
+                    "request": self._clean(str(previous.get("request_summary") or ""))[:500],
+                    "answer": self._clean(str(previous.get("result_summary") or ""))[:1000],
+                }
+
         job, token = self.jobs.create("agent", None, safe_text)
         state.last_job_id = job.id
         self.conversations.save(owner, channel, state)
@@ -98,6 +107,7 @@ class AgentService:
                         safe_text,
                         owner_id=str(owner),
                         channel_id=str(channel),
+                        previous_turn=previous_turn,
                     )
                 )
             finally:
