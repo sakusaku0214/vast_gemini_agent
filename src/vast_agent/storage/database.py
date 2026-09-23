@@ -183,6 +183,7 @@ class Database:
         host: str,
         argv: list[str],
         reason: str,
+        timeout: int,
         created: datetime,
     ) -> int:
         self.migrate()
@@ -190,9 +191,12 @@ class Database:
         with self.connect() as db:
             cursor = db.execute(
                 "INSERT INTO write_proposals("
-                "owner_id,channel_id,host,argv_json,reason,status,created_at,updated_at"
-                ") VALUES(?,?,?,?,?,'PENDING',?,?)",
-                (owner_id, channel_id, host, json.dumps(argv, ensure_ascii=False), reason, now, now),
+                "owner_id,channel_id,host,argv_json,reason,timeout,status,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,?,'PENDING',?,?)",
+                (
+                    owner_id, channel_id, host, json.dumps(argv, ensure_ascii=False),
+                    reason, timeout, now, now,
+                ),
             )
             return int(cursor.lastrowid)
 
