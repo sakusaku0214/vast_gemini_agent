@@ -43,7 +43,10 @@ class RuntimeManager:
 
     def start(self) -> tuple[bool, str]:
         status, _ = self.status()
-        if status == "RUNNING": return False, "already running"
+        if status == "RUNNING":
+            return False, "already running"
+        if status == "STOPPED / stale pid":
+            self.paths.process_state.unlink(missing_ok=True)
         self.paths.create()
         log = self.paths.agent_logs / "agent.log"
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS if os.name == "nt" else 0
@@ -62,7 +65,10 @@ class RuntimeManager:
     def stop(self, grace: float = 8) -> tuple[bool, str]:
         status, state = self.status()
         if status != "RUNNING" or not state:
-            return (True, "not running") if status == "STOPPED" else (False, "stale PID; refusing to terminate")
+            if status == "STOPPED / stale pid":
+                self.paths.process_state.unlink(missing_ok=True)
+                return True, "stale PID state cleared"
+            return True, "not running"
         pid = int(state["pid"])
         try:
             if os.name == "nt":
