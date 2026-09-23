@@ -445,3 +445,36 @@ def test_windows_runtime_stop_uses_taskkill(tmp_path, monkeypatch):
     assert detail == "stopped"
     assert ("taskkill", "/PID", "321") in calls
     assert not paths.process_state.exists()
+
+
+
+def test_previous_successful_turn_is_passed_to_agent(tmp_path):
+    db = Database(tmp_path / "db")
+    manager = JobManager(db)
+    store = ConversationStore(db)
+    seen = []
+
+    class Agent:
+        def investigate(self, host, question, **kwargs):
+            seen.append((question, kwargs.get("previous_turn")))
+            return "ok"
+
+    service = AgentService(
+        HostRegistry(hosts={}),
+        object(),
+        object(),
+        manager,
+        store,
+        Agent(),
+    )
+
+    first = asyncio.run(service.handle_question("TaichiのGPU情報教えて", 1, 2))
+    second = asyncio.run(service.handle_question("もう一台はVMかな？", 1, 2))
+
+    assert first.job_id is not None
+    assert second.job_id is not None
+    assert seen[0][1] is None
+    assert seen[1][1] == {
+        "request": "TaichiのGPU情報教えて",
+        "answer": "ok",
+    }
