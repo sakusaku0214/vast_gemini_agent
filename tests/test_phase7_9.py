@@ -560,3 +560,25 @@ def test_gateway_attaches_continue_view_only_to_handoff_reply():
 
     assert factory.jobs == [77]
     assert item.channel.sent[-1][1]["view"] == {"job_id": 77}
+
+
+
+def test_owner_can_reject_pending_proposal(tmp_path):
+    service, executor, proposals, proposal = make_write_service(tmp_path)
+
+    reply = asyncio.run(service.handle_question(f"拒否 #{proposal.id}", 10, 20))
+
+    assert executor.calls == []
+    assert proposals.get(proposal.id).status == "REJECTED"
+    assert "REJECTED" in reply.text
+
+
+def test_rejected_proposal_cannot_be_approved(tmp_path):
+    service, executor, proposals, proposal = make_write_service(tmp_path)
+
+    asyncio.run(service.handle_question(f"拒否 #{proposal.id}", 10, 20))
+    reply = asyncio.run(service.handle_question(f"承認 #{proposal.id}", 10, 20))
+
+    assert executor.calls == []
+    assert proposals.get(proposal.id).status == "REJECTED"
+    assert "承認待ちではありません" in reply.text
