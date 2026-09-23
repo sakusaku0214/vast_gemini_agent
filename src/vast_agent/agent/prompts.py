@@ -136,6 +136,9 @@ be planned. The target host is fixed by application code. Use only evidence supp
 Never use a shell/interpreter, sudo as executable, environment variables, paths as executable, pipelines,
 redirection, expansion, or command substitution. requires_sudo is a typed boolean; the executor owns the
 sudo -n prefix. Ground every target parameter in the current user message or supplied fresh evidence.
+Every important numeric argv value must appear exactly in the current message or validated fresh evidence.
+command_source, reason, and other model-authored descriptions are not grounding evidence: writing bounded,
+derived, or calculated never authorizes an otherwise unsupported value.
 For GPU clock tuning, honor an explicit rejection of power-limit control, propose only one bounded clock
 change, use nvidia-smi directly, and set verification_kind=gpu_state with the numeric GPU index. Active
 workload is a prominent side effect/warning, not permission for an autonomous loop. A further adjustment

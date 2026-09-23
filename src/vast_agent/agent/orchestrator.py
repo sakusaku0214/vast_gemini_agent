@@ -123,7 +123,7 @@ class InvestigationAgent:
                 return None
         elif plan.verification_target:
             target = plan.verification_target.casefold()
-            evidence = investigation.model_dump_json().casefold()
+            evidence = investigation._validated_evidence.casefold()
             if target not in message.casefold() and target not in evidence:
                 return None
         if not self._generic_target_is_grounded(plan, message, investigation):
@@ -135,7 +135,7 @@ class InvestigationAgent:
         plan: OperationPlan, message: str, investigation: InvestigationResult,
     ) -> bool:
         """Reject mutable identifiers/values not traceable to request or fresh evidence."""
-        corpus = f"{message}\n{investigation.model_dump_json()}".casefold()
+        corpus = f"{message}\n{investigation._validated_evidence}".casefold()
         target_tokens = re.findall(r"[a-z][a-z0-9_.@-]{2,}|\d+(?:\.\d+)?", plan.target.casefold())
         ignored = {"gpu", "service", "container", "package", "target", "device"}
         if any(token not in ignored and token not in corpus for token in target_tokens):
@@ -144,12 +144,32 @@ class InvestigationAgent:
             token for argument in plan.argv
             for token in re.findall(r"\d+(?:\.\d+)?", argument)
         }
-        if important_values and any(value not in corpus for value in important_values):
-            # A derived bound is allowed only when the plan explicitly documents derivation.
-            source = plan.command_source.casefold()
-            if not any(marker in source for marker in ("derived", "導出", "calculated", "bounded")):
-                return False
-        return True
+        grounded_values = (
+            set(re.findall(r"\d+(?:\.\d+)?", message))
+            | set(investigation._validated_numeric_values)
+        )
+        # command_source is model-authored metadata, not grounding evidence. A numeric argv value
+        # must occur exactly in the current request or validated fresh InvestigationResult.
+        return not important_values - grounded_values
+
+    @staticmethod
+    def _attach_validated_grounding(
+        result: InvestigationResult, session: InvestigationSession,
+    ) -> InvestigationResult:
+        evidence = json.dumps(
+            [
+                {
+                    "status": item.status,
+                    "facts": item.facts,
+                    "signatures": item.signatures,
+                    "summary": item.summary,
+                }
+                for item in session.evidence
+            ],
+            ensure_ascii=False,
+        )
+        result.ground_from_validated_evidence(evidence)
+        return result
 
     @staticmethod
     def _fallback_from_evidence(session: InvestigationSession, *, summary: str,
@@ -203,6 +223,7 @@ class InvestigationAgent:
             )
         try:
             result = InvestigationResult.model_validate_json(response.output_text)
+            self._attach_validated_grounding(result, session)
         except (ValidationError, ValueError) as exc:
             _log_result_validation_failure(exc, response.output_text)
             session.stop_reason = StopReason.BOUND_REACHED
@@ -308,6 +329,7 @@ class InvestigationAgent:
             if response.output_text and not response.function_calls:
                 try:
                     result = InvestigationResult.model_validate_json(response.output_text)
+                    self._attach_validated_grounding(result, session)
                     result.capability_gaps = [
                         ground_capability_gap(gap, session) for gap in result.capability_gaps
                     ]

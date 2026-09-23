@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Literal
 
@@ -192,3 +193,13 @@ class InvestigationResult(BaseModel):
         "ANSWERABLE", "BOUND_REACHED", "TOOL_UNAVAILABLE", "NO_NEW_EVIDENCE",
         "CAPABILITY_GAP", "ERROR", "CANCELLED",
     ] | None = None
+    # Populated only by application code from retained, validated READ records. These fields
+    # cannot be supplied by model JSON and therefore carry provenance for operation grounding.
+    _validated_evidence: str = PrivateAttr(default="")
+    _validated_numeric_values: frozenset[str] = PrivateAttr(default_factory=frozenset)
+
+    def ground_from_validated_evidence(self, evidence: str) -> None:
+        self._validated_evidence = evidence[:8000]
+        self._validated_numeric_values = frozenset(
+            re.findall(r"\d+(?:\.\d+)?", self._validated_evidence)
+        )

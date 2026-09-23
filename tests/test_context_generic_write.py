@@ -48,7 +48,10 @@ class PlanningAgent:
         self.investigations.append((host, question))
         return InvestigationResult(
             summary="GPU0: SRBMiner active, 340W, 1800MHz, 70C; nvidia-smi help supports clock lock",
-            findings=["GPU0 process SRBMiner-MULTI", "power 340 W", "clock 1800 MHz"],
+            findings=[
+                "GPU0 process SRBMiner-MULTI", "power 340 W", "clock 1800 MHz",
+                "validated supported clock 1500 MHz",
+            ],
             confidence="high", recommended_action="NONE",
             mutation_requested=("抑えて" in question or "動かし直して" in question),
             mutation_goal=question if ("抑えて" in question or "動かし直して" in question) else None,
