@@ -10,7 +10,6 @@ from vast_agent.actions.capability_bridge import (
     assess_gap,
     request_for_gap,
 )
-from vast_agent.actions.grounding import action_target_is_grounded
 from vast_agent.actions.models import (
     ActionRequest,
     ActionType,
@@ -76,11 +75,18 @@ class AgentService:
                     return ServiceReply(f"停止対象を指定してください。実行中: {candidates}")
                 target = int(running[0]["id"])
             return ServiceReply(f"Job #{target}: {self.jobs.cancel(target)}", target)
-        if self._is_fleet(folded) and any(word in folded for word in ("再起動", "restart", "reset", "リセット", "reboot")):
+        fleet_hosts = self._resolve_host_set(text)
+        if self._is_fleet(folded) and any(
+            word in folded for word in ("再起動", "restart", "reset", "リセット", "reboot", "全部")
+        ):
             return ServiceReply("fleet WRITEは禁止されています。対象hostを1台指定してください。")
-        if self._is_fleet(folded):
+        if fleet_hosts and (self._is_fleet(folded) or len(fleet_hosts) > 1):
+            if "通信量" in folded or "vnstat" in folded:
+                return await self._fleet_traffic(
+                    self._clean(text), state, owner, channel, fleet_hosts,
+                )
             scope = "gpu" if "gpu" in folded else "vast" if "vast" in folded else "system"
-            return await self._fleet(self._clean(text), scope, state, owner, channel)
+            return await self._fleet(self._clean(text), scope, state, owner, channel, fleet_hosts)
 
         from_recommendation = folded in {"それやって", "それをやって"}
         if from_recommendation:
@@ -96,26 +102,6 @@ class AgentService:
                 action = self.action_resolver.resolve(text, state.last_host)
             except InvalidPackageNameError:
                 return ServiceReply("INVALID_PACKAGE_NAME: package名の形式が不正です。")
-
-        # Deterministic patterns are only a fast path.  When they do not match, Gemini may
-        # interpret natural language into an existing typed action, but only for a host named
-        # in this turn.  The interpreter performs target-specific lexical grounding and has no
-        # tools or execution path; every accepted request still enters the normal proposal flow.
-        if action is None and self.actions is not None and self.agent is not None:
-            interpret = getattr(self.agent, "interpret_action", None)
-            if interpret is not None:
-                try:
-                    explicit_host = self.registry.resolve_in_text(text)
-                except KeyError:
-                    explicit_host = None
-                if explicit_host is not None:
-                    candidate = await asyncio.to_thread(
-                        interpret, explicit_host.name, self._clean(text),
-                    )
-                    if (candidate is not None
-                            and candidate.host == explicit_host.name
-                            and action_target_is_grounded(candidate, text)):
-                        action = candidate
 
         if action is not None:
             if self.actions is None:
@@ -164,29 +150,6 @@ class AgentService:
         if decision.route == Route.UNSUPPORTED_WRITE:
             return await self._propose_generic_operation(text, owner, channel, state)
 
-        # Keyword tables above are latency fast paths, never the authority for understanding.
-        # In a fixed host context, a tool-free Gemini classifier can recover READ/WRITE/advice
-        # intent without selecting a host, target, parameter, command, or permission.
-        semantic_host = self._semantic_context_host(text, state)
-        classifier = getattr(self.agent, "classify_host_intent", None) if self.agent else None
-        if semantic_host is not None and classifier is not None and decision.route in {
-            Route.UNKNOWN, Route.AGENT,
-        }:
-            semantic = await asyncio.to_thread(
-                classifier, semantic_host.name, self._clean(text),
-            )
-            if semantic == "WRITE":
-                return await self._propose_generic_operation(text, owner, channel, state)
-            if semantic in {"READ", "ADVICE"}:
-                decision.route = Route.AGENT
-                decision.host = semantic_host.name
-            elif semantic == "GENERAL":
-                answer = await asyncio.to_thread(self.agent.answer_general, self._clean(text))
-                state.write_context_host = None
-                self.conversations.save(owner, channel, state)
-                return ServiceReply(self._clean(answer))
-            else:
-                return ServiceReply("host operation intent is uncertain; READ、WRITE、または相談か確認してください。")
         host, choices = self._resolve_host(text, decision.host, state)
         if choices:
             return ServiceReply("hostが曖昧です: " + ", ".join(choices))
@@ -208,15 +171,10 @@ class AgentService:
         if not host.enabled:
             return ServiceReply(f"{host.name} はdisabledです。")
         if decision.route == Route.UNKNOWN:
-            # Keep obvious abbreviated READ follow-ups deterministic.
-            follow_up_scopes = {
-                "pci": "pci", "gpu": "gpu", "ディスク": "system", "vast": "vast",
-                "docker": "docker", "vm": "vm",
-            }
-            decision.scope = next(
-                (scope for word, scope in follow_up_scopes.items() if word in folded), None,
-            )
-            decision.route = Route.DETERMINISTIC if decision.scope else Route.AGENT
+            # A fixed host is sufficient to investigate. Natural language does not need to
+            # satisfy another intent gate; only the router's already-selected trivial reads
+            # bypass the Agent.
+            decision.route = Route.AGENT
         kind = "investigate" if decision.route == Route.AGENT else decision.scope or "inspect"
         safe_text = self._clean(text)
         job, token = self.jobs.create(kind, host.name, safe_text)
@@ -224,6 +182,13 @@ class AgentService:
         state.last_job_id = job.id
         state.last_scope = decision.scope or ("investigation" if decision.route == Route.AGENT else None)
         state.write_context_host = host.name
+        state.current_hosts = (host.name,)
+        state.context_kind = "single"
+        try:
+            explicit_context = self.registry.resolve_in_text(text) == host
+        except KeyError:
+            explicit_context = False
+        state.context_source = "explicit" if explicit_context else "conversation"
         self.conversations.save(owner, channel, state)
         self.jobs.start(job)
         lock_class = LockClass.HEAVY_READ if decision.route == Route.AGENT else LockClass.READ
@@ -272,7 +237,39 @@ class AgentService:
                         self._clean(f"Job #{job.id}\n{summary}\n\n{rendered}"),
                         job.id, proposal=proposal, policy=policy,
                     )
+        if investigation_result is not None and investigation_result.mutation_requested:
+            return await self._proposal_from_investigation(
+                text, owner, channel, state, host, investigation_result,
+            )
         return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
+
+    async def _proposal_from_investigation(
+        self, text, owner, channel, state, host, investigation,
+    ) -> ServiceReply:
+        """Turn the Agent's post-READ conclusion into one inert, approval-gated plan."""
+        if self._is_fleet(text.casefold()):
+            return ServiceReply("fleet WRITEは禁止されています。対象hostを1台指定してください。")
+        planner = getattr(self.agent, "plan_operation", None) if self.agent else None
+        if planner is None or self.actions is None:
+            return ServiceReply("WRITE/Approval operation planning capability unavailable")
+        try:
+            explicit = self.registry.resolve_in_text(text)
+        except KeyError:
+            explicit = None
+        host_source = "current message" if explicit is not None else "conversation context"
+        plan = await asyncio.to_thread(
+            planner, host.name, host_source, self._clean(text), investigation,
+        )
+        if plan is None:
+            return ServiceReply("変更対象または値が曖昧です。対象hostと具体的targetを確認してください。")
+        proposal = await asyncio.to_thread(self.actions.propose_operation, plan, str(owner))
+        state.last_host = host.name
+        state.write_context_host = None
+        self.conversations.save(owner, channel, state)
+        rendered = render_operation_proposal(plan, proposal.id, proposal.expires_at.isoformat())
+        if not self.actions.settings.generic_operations_enabled:
+            rendered += "\nPolicy: generic operation execution is disabled"
+        return ServiceReply(self._clean(rendered), proposal=proposal, policy="ALLOW")
 
     async def _propose_generic_operation(self, text, owner, channel, state) -> ServiceReply:
         write_host, host_source, choices = self._resolve_write_host(text, state)
@@ -304,7 +301,7 @@ class AgentService:
 
     @staticmethod
     def _is_cancel_request(text: str) -> bool:
-        return (text == "止めて"
+        return (text in {"中止", "キャンセル", "やめて", "止めて", "今のやつ止めて", "今の調査止めて"}
                 or text.startswith("!cancel")
                 or bool(re.search(r"#\d+\s*止めて", text))
                 or bool(re.search(r"(?:今の調査|この調査|ジョブ)(?:を)?止めて", text)))
@@ -354,12 +351,23 @@ class AgentService:
         if routed:
             try: return self.registry.resolve(routed), []
             except KeyError: pass
-        # This method is reached only after the deterministic WRITE resolver. Context inheritance
-        # is deliberately limited to READ-shaped follow-ups and is never a WRITE target resolver.
-        if self.remember_last_host and self._is_read_follow_up(folded) and state.last_host:
+        # Scope resolution is independent of READ/WRITE interpretation. A preceding single-host
+        # investigation establishes context for natural follow-ups; fleet never does.
+        if (self.remember_last_host and state.last_host and not self._is_fleet(folded)
+                and (self._has_host_relevance(folded) or self._is_read_follow_up(folded))):
             try: return self.registry.resolve(state.last_host), []
             except KeyError: pass
         return None, []
+
+    @staticmethod
+    def _has_host_relevance(text: str) -> bool:
+        """Recognize structural operational references, not READ/WRITE intent."""
+        if re.search(r"gpu\s*[0-9]*|nvidia-smi|nvtop|vastai?|docker|pci|vm|vnstat", text, re.I):
+            return True
+        return any(term in text for term in (
+            "状態", "二枚", "片方", "通信量", "温度", "ディスク", "サービス",
+            "パッケージ", "実行ファイル", "さっき", "このホスト", "このマシン",
+        ))
 
     def _resolve_write_host(self, text: str, state: ConversationState):
         """Allow only high-confidence, immediately grounded single-host WRITE context."""
@@ -383,22 +391,6 @@ class AgentService:
             except KeyError:
                 pass
         return None, None, []
-
-    def _semantic_context_host(self, text: str, state: ConversationState):
-        """Select only an explicit or immediate single-host context; never fleet authority."""
-        try:
-            explicit = self.registry.resolve_in_text(text)
-        except KeyError:
-            explicit = None
-        if explicit is not None:
-            return explicit
-        if (state.last_host and state.write_context_host == state.last_host
-                and not self._is_fleet(text.casefold())):
-            try:
-                return self.registry.resolve(state.last_host)
-            except KeyError:
-                return None
-        return None
 
     @staticmethod
     def _is_read_follow_up(text: str) -> bool:
@@ -450,13 +442,28 @@ class AgentService:
 
     @staticmethod
     def _is_fleet(text: str) -> bool:
-        return any(word in text for word in ("全台", "全マシン", "fleet "))
+        return any(word in text for word in ("全台", "全マシン", "fleet ", "全部"))
+
+    def _resolve_host_set(self, text: str):
+        """Resolve and freeze scope in application code; the model never selects addresses."""
+        folded = text.casefold()
+        enabled = [host for host in self.registry.hosts.values() if host.enabled]
+        if self._is_fleet(folded):
+            return tuple(enabled)
+        matches = [
+            host for host in enabled
+            if any(name.casefold() in folded for name in (host.name, *host.aliases))
+        ]
+        return tuple(matches)
 
     async def _fleet(self, request: str, scope: str, state: ConversationState,
-                     owner, channel) -> ServiceReply:
+                     owner, channel, hosts=None) -> ServiceReply:
         job, token = self.jobs.create(f"fleet-{scope}", None, request)
         # Fleet output is never high-confidence single-host context for a later WRITE.
         state.last_host = None; state.write_context_host = None
+        state.current_hosts = tuple(host.name for host in (hosts or ()))
+        state.context_kind = "fleet"
+        state.context_source = "explicit"
         state.last_job_id = job.id; state.last_scope = scope
         self.conversations.save(owner, channel, state); self.jobs.start(job)
         semaphore = asyncio.Semaphore(self.max_parallel_hosts)
@@ -478,8 +485,22 @@ class AgentService:
                 detail = self._fleet_detail(observation, scope)
                 return f"{host.name:<20} {state_name:<5} {detail}"
         try:
-            tasks = [asyncio.create_task(one(h)) for h in self.registry.hosts.values() if h.enabled]
+            tasks = [asyncio.create_task(one(h)) for h in (
+                hosts or tuple(h for h in self.registry.hosts.values() if h.enabled)
+            )]
             rows = await asyncio.gather(*tasks)
+            if scope == "gpu" and any(word in request for word in ("高い順", "ランキング")):
+                def hottest(row: str) -> int:
+                    values = [int(value) for value in re.findall(r"(\d+)°C", row)]
+                    return max(values, default=-1)
+                rows.sort(key=hottest, reverse=True)
+            if scope == "vast" and "止ま" in request:
+                rows = [
+                    row for row in rows
+                    if " ERROR " in row or not re.search(r"vast=active(?:\s|$)", row)
+                ]
+                if not rows:
+                    rows = ["停止中のhostはありません"]
             summary = f"🖥 Fleet {scope.upper()}\n" + "\n".join(rows)
             error_code = "FLEET_PARTIAL_FAILURE" if any(" ERROR " in row for row in rows) else None
             self.jobs.finish(job, self._clean(summary), error_code)
@@ -491,6 +512,67 @@ class AgentService:
             summary = "Fleet coordination failed. 詳細はagent logを確認してください。"
             self.jobs.finish(job, summary, "FLEET_COORDINATOR_ERROR")
         return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
+
+    async def _fleet_traffic(self, request, state, owner, channel, hosts) -> ServiceReply:
+        """Collect one common READ primitive concurrently and aggregate numeric evidence."""
+        job, token = self.jobs.create("fleet-traffic", None, request)
+        state.last_host = None
+        state.write_context_host = None
+        state.current_hosts = tuple(host.name for host in hosts)
+        state.context_kind = "fleet"
+        state.context_source = "explicit"
+        state.last_job_id = job.id
+        state.last_scope = "fleet"
+        self.conversations.save(owner, channel, state)
+        self.jobs.start(job)
+        semaphore = asyncio.Semaphore(self.max_parallel_hosts)
+        functions = getattr(self.agent, "functions", None)
+
+        async def one(host):
+            async with semaphore:
+                if token.cancelled:
+                    return host.name, None, "cancelled"
+                if functions is None:
+                    return host.name, None, "traffic READ unavailable"
+                try:
+                    value = await asyncio.to_thread(
+                        functions.execute, "query_traffic_history",
+                        {"host": host.name, "period": "yesterday", "interface": None},
+                        host.name,
+                    )
+                    evidence = value.get("untrusted_evidence", {})
+                    if isinstance(evidence, dict) and evidence.get("status") == "available":
+                        return host.name, evidence, None
+                    return host.name, None, str(evidence.get("status", "unavailable"))
+                except Exception:
+                    return host.name, None, "read failed"
+
+        results = await asyncio.gather(*(one(host) for host in hosts))
+        available = sorted(
+            ((name, value) for name, value, error in results if value is not None),
+            key=lambda item: int(item[1]["total_bytes"]), reverse=True,
+        )
+        rows = ["| # | Host | RX | TX | Total |", "|---:|---|---:|---:|---:|"]
+        for rank, (name, value) in enumerate(available, 1):
+            rows.append(
+                f"| {rank} | {name} | {self._bytes(value['rx_bytes'])} | "
+                f"{self._bytes(value['tx_bytes'])} | {self._bytes(value['total_bytes'])} |"
+            )
+        unavailable = [f"- {name}: {error}" for name, _, error in results if error]
+        summary = "昨日の通信量 (host-local time)\n" + "\n".join(rows)
+        if unavailable:
+            summary += "\n\nUnavailable\n" + "\n".join(unavailable)
+        self.jobs.finish(job, self._clean(summary), "FLEET_PARTIAL_FAILURE" if unavailable else None)
+        return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
+
+    @staticmethod
+    def _bytes(value: int) -> str:
+        amount = float(value)
+        for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+            if amount < 1024 or unit == "TiB":
+                return f"{amount:.1f} {unit}"
+            amount /= 1024
+        return f"{amount:.1f} TiB"
 
     @staticmethod
     def _fleet_detail(observation, scope):
@@ -513,10 +595,18 @@ class AgentService:
         signatures = ", ".join(observation.signatures) or "none"
         header = f"{icon} {observation.host} — {(scope or 'full').upper()}"
         if scope in (None, "gpu"):
-            return (f"{header}\nGPU: {first.model if first else 'not detected'}\n"
-                    f"Temp: {first.temperature_c if first else '-'}°C\n"
-                    f"Util: {first.utilization_percent if first else '-'}%\n"
-                    f"NVML: {'OK' if gpu.nvml_ok else 'unavailable'}")
+            rows = [
+                f"GPU{getattr(device, 'index', index)} {device.model or 'unknown'} | "
+                f"{device.temperature_c if device.temperature_c is not None else '-'}°C | "
+                f"util {device.utilization_percent if device.utilization_percent is not None else '-'}% | "
+                f"power {getattr(device, 'power_draw_w', None) if getattr(device, 'power_draw_w', None) is not None else '-'}W | "
+                f"VRAM {getattr(device, 'vram_used_mb', None) if getattr(device, 'vram_used_mb', None) is not None else '-'}"
+                f"/{getattr(device, 'vram_total_mb', None) if getattr(device, 'vram_total_mb', None) is not None else '-'} MiB"
+                for index, device in enumerate(gpu.devices)
+            ]
+            return f"{header}\n" + ("\n".join(rows) or "GPU: not detected") + (
+                f"\nNVML: {'OK' if gpu.nvml_ok else 'unavailable'}"
+            )
         if scope == "pci":
             return (f"{header}\nPCI count: {gpu.pci_count}\nnvidia: {gpu.nvidia_bound}\n"
                     f"vfio: {gpu.vfio_bound}\nunbound: {gpu.unbound}\nSignatures: {signatures}")

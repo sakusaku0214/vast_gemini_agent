@@ -1,4 +1,3 @@
-import json
 
 from vast_agent.actions.operation_plan import OperationPlan
 from vast_agent.agent.gemini import ScriptedGeminiClient
@@ -40,21 +39,9 @@ def evidence():
     )
 
 
-def test_semantic_classifier_routes_phrase_absent_from_fast_path(tmp_path):
-    planner = agent(tmp_path, [json.dumps({"intent": "WRITE", "reason": "requests adjustment"})])
-    assert planner.classify_host_intent(
-        "garage-h12ssl-nt", "GPU0ちょっと抑えて。300Wくらいにしたい",
-    ) == "WRITE"
-    request = planner.client.requests[0]
-    assert request["tools"] == []
-    assert "Fixed host (cannot be changed): garage-h12ssl-nt" in str(request["inputs"])
-
-
-def test_semantic_classifier_cannot_return_or_change_host(tmp_path):
-    planner = agent(tmp_path, [json.dumps({
-        "intent": "WRITE", "reason": "mutation", "host": "other-host",
-    })])
-    assert planner.classify_host_intent("garage-h12ssl-nt", "GPU0を抑えて") == "UNCERTAIN"
+def test_semantic_classifier_gate_was_removed(tmp_path):
+    planner = agent(tmp_path, [])
+    assert not hasattr(planner, "classify_host_intent")
 
 
 def test_operation_planner_rejects_changed_host_and_invented_target(tmp_path):

@@ -5,8 +5,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
-from vast_agent.actions.models import ActionType
-
 
 class Route(StrEnum):
     DETERMINISTIC = "deterministic"
@@ -21,22 +19,6 @@ class IntentDecision(BaseModel):
     action: str | None = None
     scope: str | None = None
     reason: str | None = None
-
-
-class ActionIntentCandidate(BaseModel):
-    """Untrusted model interpretation; application code must ground and type it."""
-
-    model_config = ConfigDict(extra="forbid")
-    action_type: ActionType | None = None
-    parameters: dict[str, object] = Field(default_factory=dict)
-
-
-class HostOperationIntentCandidate(BaseModel):
-    """Routing-only semantic result; it carries no host, target, argv, or authority."""
-
-    model_config = ConfigDict(extra="forbid")
-    intent: Literal["READ", "WRITE", "ADVICE", "GENERAL", "UNCERTAIN"]
-    reason: str = Field(max_length=200)
 
 
 class InspectHostArgs(BaseModel):
@@ -201,6 +183,10 @@ class InvestigationResult(BaseModel):
         "PHYSICAL_CHECK_REQUIRED",
     ] = "CONTINUE_OBSERVING"
     missing_evidence: list[str] = Field(default_factory=list)
+    # Understanding a requested mutation is part of investigation, not a routing gate.  This
+    # flag carries no execution authority; application grounding and approval remain mandatory.
+    mutation_requested: bool = False
+    mutation_goal: str | None = Field(default=None, max_length=500)
     capability_gaps: list[CapabilityGap] = Field(default_factory=list, max_length=3)
     stop_reason: Literal[
         "ANSWERABLE", "BOUND_REACHED", "TOOL_UNAVAILABLE", "NO_NEW_EVIDENCE",

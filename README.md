@@ -29,9 +29,9 @@ Model freedom before execution. Human authority at execution.
 
 ```text
 Discord / CLI
-  → Intent + compact conversation context
-  → Gemini Planner
-  → READ Discovery / Investigation
+  → application-owned host / immutable host-set resolution
+  → adaptive READ Discovery / Investigation Agent
+  → answer or explicit mutation conclusion
   → Operation Planner
   → structured Proposal
   → OWNER Approve / Reject
@@ -42,7 +42,7 @@ Discord / CLI
 ```
 
 - **InvestigationAgent** は request-local evidence を集める read-only phase です。
-- **Action Interpreter** は自然言語を既存 typed action に ground します。
+- **Router** は明白で安全な READ の latency optimization にすぎず、理解の gate ではありません。
 - **Operation Planner** は executable、argv、sudo、理由、効果、検証を構造化します。
 - **Policy Engine** は deployment policy、operation impact、hard floor を code 側で判定します。
 - **Approval Coordinator** は OWNER、TTL、single-use、atomic transition を管理します。
@@ -72,7 +72,10 @@ password prompt や password の保存・入力は扱いません。sudoers は�
 
 ## Conversation context
 
-READ follow-up は、直前に一意の host が確立されていれば last host を継承できます。WRITE も、直前の一ホスト調査への明確な follow-up で confidence が HIGH、競合 host や fleet 解釈がなく、current message が具体的 target を示す場合に限って host を継承できます。
+通常の READ は一意の current host context を確立します。以後の `二枚あるでしょう？`、
+`NVTOP入ってる？`、`nvidia-smi見せて`、`GPU0ちょっと抑えて` は intent keyword を要求せず、
+同じ host の Investigation Agent に渡ります。一般会話は mutation authority を失わせても、無害な
+READ context を不要に破棄しません。fleet context は単一 host の WRITE authority にはなりません。
 
 継承した host は Proposal に `Host source: conversation context` として明示します。GPU index や操作 parameter を context から発明することはありません。曖昧な場合は確認します。
 
@@ -101,7 +104,19 @@ CLI 名の巨大な permission catalog はありません。installed executable
 - `operations.allowed_actions` は既存 typed action の execution deployment policy です。
 - `operations.generic_operations_enabled` は generic mutation execution の独立 policy です。
 
-`SCOPES` / `WRITE_WORDS` / `AGENT_WORDS` は明白な要求を低 latency で処理する fast path にすぎません。該当しない host-context message は tool-free semantic classifier が READ / WRITE / ADVICE / GENERAL / UNCERTAIN に分類します。この分類は host、target、parameter、argv、permission を選べず、WRITE の場合も investigation と grounding を経て Proposal を作るだけです。
+`SCOPES` / `WRITE_WORDS` / `AGENT_WORDS` は明白な要求を低 latency で処理する fast path にすぎません。
+該当しない host-context message もそのまま Investigation Agent に届きます。mandatory semantic
+classifier や `UNCERTAIN` refusal gate はありません。Agent は READ evidence を集めた同じ reasoning
+loop で answer / advice / mutation request を区別し、mutation のときだけ planner に引き渡します。
+
+## Fleet is a scope
+
+Fleet は capability ではなく、application が固定する immutable host set です。`全台` は enabled
+host 全体、複数の alias はその host だけを選び、Gemini が address を追加することはありません。
+同じ validated READ intelligence を host ごとに `max_parallel_hosts` 以下で実行し、一台の失敗を
+他の結果から分離します。比較、filter、ranking、sum/average/min/max などは structured evidence から
+合成します。たとえば昨日の vnStat RX/TX/total は host-local day で収集し、application が total bytes
+を確実に降順 sort します。fleet mutation と batch approval は提供しません。
 
 ## Approval flow
 

@@ -11,6 +11,7 @@ class GpuDevice(BaseModel):
     utilization_percent: int | None = None
     vram_used_mb: int | None = None
     vram_total_mb: int | None = None
+    power_draw_w: float | None = None
     power_state: str | None = None
     pci_bus: str | None = None
 

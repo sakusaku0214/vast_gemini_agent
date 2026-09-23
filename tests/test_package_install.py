@@ -391,7 +391,7 @@ class RebootIntentAgent:
         )
 
 
-def test_service_uses_flexible_interpretation_as_proposal_only_fallback(tmp_path):
+def test_service_does_not_run_a_pre_agent_action_interpreter(tmp_path):
     db, actions, remote, preflight = coordinator(tmp_path)
     agent = FlexibleInstallAgent()
     service = AgentService(
@@ -403,11 +403,9 @@ def test_service_uses_flexible_interpretation_as_proposal_only_fallback(tmp_path
         "garage-magへnvitopを導入しておいて", 7, 9,
     ))
 
-    assert agent.calls == [("garage-mag", "garage-magへnvitopを導入しておいて")]
-    assert reply.proposal is not None
-    assert reply.proposal.status == "PENDING"
-    assert reply.proposal.parameters.package_name == "nvitop"
-    assert preflight.calls == 1
+    assert agent.calls == []
+    assert reply.proposal is None
+    assert preflight.calls == 0
     assert remote.calls == []
 
 
@@ -424,7 +422,7 @@ def test_reboot_fallback_requires_current_turn_host_and_preserves_advice_assessm
 
     assert hostless.proposal is None
     assert "WRITE" in hostless.text
-    assert agent.interpretations == [("garage-mag", "garage-magは再起動した方がいい？")]
+    assert agent.interpretations == []
     assert agent.investigations == [("garage-mag", "garage-magは再起動した方がいい？")]
     assert advice.proposal is None
     assert "assessment only" in advice.text

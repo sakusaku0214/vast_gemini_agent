@@ -23,7 +23,7 @@ class ToolMetadata:
 TOOLS: Final[dict[str, ToolMetadata]] = {
     "host_ping": ToolMetadata("host_ping", "Verify SSH connectivity", "read_only", (), 10, ("true",)),
     "get_system_health": ToolMetadata("get_system_health", "Filesystem and failed-unit health", "read_only", (), 20, ("sh", "-c", "df -P; systemctl --failed --no-legend --plain")),
-    "get_gpu_status": ToolMetadata("get_gpu_status", "NVIDIA GPU metrics", "read_only", ("nvidia",), 20, ("nvidia-smi", "--query-gpu=index,uuid,name,temperature.gpu,utilization.gpu,memory.used,memory.total,pstate,pci.bus_id", "--format=csv,noheader,nounits")),
+    "get_gpu_status": ToolMetadata("get_gpu_status", "NVIDIA GPU metrics", "read_only", ("nvidia",), 20, ("nvidia-smi", "--query-gpu=index,uuid,name,temperature.gpu,utilization.gpu,memory.used,memory.total,pstate,pci.bus_id,power.draw", "--format=csv,noheader,nounits")),
     "get_gpu_processes": ToolMetadata("get_gpu_processes", "NVIDIA compute processes", "read_only", ("nvidia",), 20, ("nvidia-smi", "--query-compute-apps=gpu_uuid,pid,process_name,used_memory", "--format=csv,noheader,nounits")),
     # PCI discovery remains available when NVML/NVIDIA support is absent (for example VFIO).
     # The parser selects only NVIDIA display and companion audio functions.

@@ -50,14 +50,9 @@ class PlanningAgent:
             summary="GPU0: SRBMiner active, 340W, 1800MHz, 70C; nvidia-smi help supports clock lock",
             findings=["GPU0 process SRBMiner-MULTI", "power 340 W", "clock 1800 MHz"],
             confidence="high", recommended_action="NONE",
+            mutation_requested=("抑えて" in question or "動かし直して" in question),
+            mutation_goal=question if ("抑えて" in question or "動かし直して" in question) else None,
         )
-
-    def classify_host_intent(self, host, message):
-        if "下げた方がいい" in message or "すべき" in message:
-            return "ADVICE"
-        if "状況" in message or "動いてる？" in message:
-            return "READ"
-        return "WRITE"
 
     def plan_operation(self, host, host_source, message, investigation):
         self.plans.append((host, host_source, message, investigation.summary))
@@ -132,7 +127,7 @@ def test_explicit_host_unknown_service_write_uses_semantic_fallback(tmp_path):
     # its GPU target was not grounded in this service request. Routing still reached planning.
     reply = asyncio.run(app.handle_question("h12sslのfoo.serviceを動かし直して", 7, 9))
     assert reply.proposal is None
-    assert "grounding is uncertain" in reply.text
+    assert "曖昧" in reply.text
     assert agent.investigations[-1][0] == "garage-h12ssl-nt"
 
 

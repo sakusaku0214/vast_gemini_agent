@@ -297,3 +297,21 @@ def test_observation_severity_is_not_green_for_failures():
     assert AgentService._format_observation(observation(ssh_ok=False)).startswith("🔴")
     assert not AgentService._format_observation(observation(nvml_ok=False)).startswith("🟢")
     assert not AgentService._format_observation(observation(signatures=("NVML_UNAVAILABLE",))).startswith("🟢")
+
+
+def test_gpu_formatter_lists_every_detected_device():
+    devices = [
+        SimpleNamespace(index=0, model="RTX 3090", temperature_c=61,
+                        utilization_percent=98, power_draw_w=300.5,
+                        vram_used_mb=20000, vram_total_mb=24576),
+        SimpleNamespace(index=1, model="RTX 3090", temperature_c=52,
+                        utilization_percent=4, power_draw_w=91.0,
+                        vram_used_mb=1024, vram_total_mb=24576),
+    ]
+    observation = SimpleNamespace(
+        host="garage-h12ssl-nt", ssh_ok=True, signatures=[],
+        gpu=SimpleNamespace(nvml_ok=True, devices=devices),
+    )
+    rendered = AgentService._format_observation(observation, "gpu")
+    assert "GPU0 RTX 3090" in rendered and "GPU1 RTX 3090" in rendered
+    assert "300.5W" in rendered and "20000/24576 MiB" in rendered

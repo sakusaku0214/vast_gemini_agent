@@ -170,18 +170,24 @@ class Database:
     def save_conversation(self, owner: str, channel: str, host: str | None,
                           job_id: int | None, scope: str | None,
                           recommended_action: str | None = None,
-                          write_context_host: str | None = None) -> None:
+                          write_context_host: str | None = None,
+                          context_hosts_json: str = "[]", context_kind: str = "none",
+                          context_source: str | None = None) -> None:
         with self.connect() as db:
             db.execute(
                 "INSERT INTO conversation_state(owner_id,channel_id,last_host,last_job_id,last_scope,"
-                "updated_at,last_recommended_action,write_context_host) VALUES(?,?,?,?,?,?,?,?) "
+                "updated_at,last_recommended_action,write_context_host,context_hosts_json,"
+                "context_kind,context_source) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(owner_id,channel_id) "
                 "DO UPDATE SET last_host=excluded.last_host,last_job_id=excluded.last_job_id,"
                 "last_scope=excluded.last_scope,updated_at=excluded.updated_at,"
                 "last_recommended_action=excluded.last_recommended_action,"
-                "write_context_host=excluded.write_context_host",
+                "write_context_host=excluded.write_context_host,"
+                "context_hosts_json=excluded.context_hosts_json,context_kind=excluded.context_kind,"
+                "context_source=excluded.context_source",
                 (owner, channel, host, job_id, scope, datetime.now(UTC).isoformat(),
-                 recommended_action, write_context_host),
+                 recommended_action, write_context_host, context_hosts_json, context_kind,
+                 context_source),
             )
 
     def create_action_proposal(self, proposal: ActionProposal) -> int:

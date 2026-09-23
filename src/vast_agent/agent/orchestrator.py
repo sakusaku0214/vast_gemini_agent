@@ -5,31 +5,19 @@ import logging
 import re
 import time
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 from vast_agent.actions.capability_bridge import ground_capability_gap
-from vast_agent.actions.grounding import action_target_is_grounded
-from vast_agent.actions.models import (
-    ActionParameters,
-    ActionRequest,
-)
 from vast_agent.actions.operation_plan import OperationPlan
-from vast_agent.actions.registry import ActionRegistry
 from vast_agent.agent.evidence import compact_evidence
 from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import GeminiClient
 from vast_agent.agent.host_read import FUNCTION_DECLARATIONS, HOST_READ_CAPABILITIES
 from vast_agent.agent.investigation_session import InvestigationSession, StopReason
-from vast_agent.agent.models import (
-    ActionIntentCandidate,
-    HostOperationIntentCandidate,
-    InvestigationResult,
-)
+from vast_agent.agent.models import InvestigationResult
 from vast_agent.agent.prompts import (
-    ACTION_INTENT_PROMPT,
     FINAL_SYNTHESIS_PROMPT,
     GENERAL_SYSTEM_PROMPT,
-    HOST_OPERATION_INTENT_PROMPT,
     OPERATION_PLANNER_PROMPT,
     SYSTEM_PROMPT,
 )
@@ -100,60 +88,6 @@ class InvestigationAgent:
                  settings: GeminiSettings, general_tools: GeneralToolRegistry | None = None) -> None:
         self.client = client; self.functions = functions; self.database = database; self.settings = settings
         self.general_tools = general_tools
-
-    def interpret_action(self, host: str, message: str) -> ActionRequest | None:
-        """Use Gemini for NLU only, then enforce code-owned typing and lexical grounding."""
-        try:
-            response = self.client.interact(
-                model=self.settings.model,
-                inputs=[_user_input(f"Explicit host: {host}\nCurrent user message: {message}")],
-                system_instruction=ACTION_INTENT_PROMPT,
-                tools=[],
-                thinking_level=self.settings.default_thinking_level,
-                store=self.settings.store_interactions,
-            )
-        except Exception:
-            logger.exception("Gemini action interpretation failed")
-            return None
-        self.database.save_token_usage(
-            "action_interpretation", self.settings.model,
-            self.settings.default_thinking_level, response.usage,
-        )
-        if response.function_calls or not response.output_text:
-            return None
-        try:
-            candidate = ActionIntentCandidate.model_validate_json(response.output_text)
-            if candidate.action_type is None:
-                return None
-            parameters = TypeAdapter(ActionParameters).validate_python(candidate.parameters)
-            request = ActionRequest(
-                host=host, action_type=candidate.action_type, parameters=parameters,
-            )
-            ActionRegistry().validate_consistency(request)
-        except (ValidationError, ValueError):
-            return None
-        return request if action_target_is_grounded(request, message) else None
-
-    def classify_host_intent(self, host: str, message: str) -> str:
-        """Semantically route a fixed-host message without tools, targets, or execution rights."""
-        try:
-            response = self.client.interact(
-                model=self.settings.model,
-                inputs=[_user_input(f"Fixed host (cannot be changed): {host}\nMessage: {message}")],
-                system_instruction=HOST_OPERATION_INTENT_PROMPT, tools=[],
-                thinking_level=self.settings.default_thinking_level,
-                store=self.settings.store_interactions,
-            )
-            self.database.save_token_usage(
-                "host_intent", self.settings.model, self.settings.default_thinking_level,
-                response.usage,
-            )
-            if response.function_calls or not response.output_text:
-                return "UNCERTAIN"
-            return HostOperationIntentCandidate.model_validate_json(response.output_text).intent
-        except (ValidationError, ValueError):
-            logger.warning("Host operation intent validation failed")
-            return "UNCERTAIN"
 
     def plan_operation(self, host: str, host_source: str, message: str,
                        investigation: InvestigationResult) -> OperationPlan | None:
