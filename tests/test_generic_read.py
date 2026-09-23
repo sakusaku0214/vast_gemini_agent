@@ -71,6 +71,36 @@ def test_unknown_safe_cli_is_not_catalog_gated_but_secrets_are_blocked():
     assert validate_read_argv("curl", ["https://example.invalid"]).classification == ReadClassification.BLOCKED
 
 
+def test_unknown_harmless_read_executes_but_flag_driven_mutation_does_not():
+    remote = RecordingExecutor()
+    read = run_validated_read(remote, host(), "novel-cli", ["inspect", "--format=json"])
+    mutation = run_validated_read(
+        remote, host(), "novel-cli", ["inspect", "--output=/tmp/state.json"],
+    )
+
+    assert read["classification"] == ReadClassification.READ
+    assert mutation["classification"] == ReadClassification.MUTATION
+    assert remote.calls == [
+        ("x570", ("novel-cli", "inspect", "--format=json"), 15),
+    ]
+
+
+@pytest.mark.parametrize(("executable", "argv"), [
+    ("curl", ["-XPOST", "localhost:8080/state"]),
+    ("curl", ["--data", "enabled=true", "localhost:8080/state"]),
+    ("curl", ["-o", "/tmp/result", "localhost:8080/state"]),
+    ("find", ["/tmp", "-exec", "touch", "/tmp/marker", "+"]),
+    ("sed", ["-i", "s/a/b/", "/tmp/config"]),
+    ("tar", ["-xf", "/tmp/archive.tar"]),
+    ("python3", ["-c", "print('bypass')"]),
+])
+def test_flag_network_and_indirect_mutations_are_not_reads(executable, argv):
+    remote = RecordingExecutor()
+    result = run_validated_read(remote, host(), executable, argv)
+    assert result["classification"] != ReadClassification.READ
+    assert remote.calls == []
+
+
 def test_output_is_bounded_clean_and_redacted():
     value = "token=abc\x00\n" + "x\n" * 300
     result = sanitize_output(value, ["abc"], max_bytes=100, max_lines=5)

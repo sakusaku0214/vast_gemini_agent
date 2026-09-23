@@ -98,6 +98,8 @@ Agent は次の reusable flow を使えます。
 
 CLI 名の巨大な permission catalog はありません。未知 CLI も catalog 登録や事前の `which` 成功を要求せず、具体的な argv を risk validation して READ として試します。`query_executable`、package/capability registry、help は permission gate ではなく、直接実行の失敗後や構文が不明な場合に使う discovery evidence です。既知の mutation は WRITE のままです。
 
+Risk validation は executable の許可リストではなく、mutation verb/option、file-output、HTTP upload・非GET method、archive extraction、in-place edit、interpreter/wrapper delegation といった小さな capability pattern を検査します。未知 CLI の通常 READ は引き続き自動実行されます。
+
 ### Catalogs and registries
 
 **Catalogs are metadata, not permission or intelligence boundaries.** いずれの registry も Gemini が理解してよい概念を制限しません。

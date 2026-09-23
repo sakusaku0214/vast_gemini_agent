@@ -30,11 +30,16 @@ class ReadValidation:
     reason: str
 
 
-_SHELL_EXECUTORS = frozenset({"sh", "bash", "dash", "zsh", "fish", "eval", "env", "printenv"})
+_SHELL_EXECUTORS = frozenset({
+    "sh", "bash", "dash", "zsh", "fish", "eval", "env", "printenv", "sudo",
+    "python", "python3", "perl", "ruby", "node", "php", "awk", "xargs",
+    "timeout", "nice", "nohup", "setsid", "stdbuf",
+})
 _REMOTE_EXECUTORS = frozenset({"ssh", "scp", "sftp", "nc", "netcat", "socat", "telnet"})
 _MUTATION_EXECUTABLES = frozenset({
     "shutdown", "reboot", "poweroff", "halt", "rm", "dd", "mount", "umount", "chmod",
-    "chown", "kill", "pkill", "killall", "apt", "apt-get", "dpkg",
+    "chown", "kill", "pkill", "killall", "apt", "apt-get", "dpkg", "cp", "mv",
+    "mkdir", "touch", "truncate", "tee", "install", "wget",
 })
 _MUTATION_VERBS = frozenset({
     "create", "destroy", "delete", "remove", "set", "update", "edit", "write",
@@ -46,6 +51,15 @@ _SECRET_MARKERS = (
     ".ssh", "id_rsa", "id_ed25519", "authorized_keys", "credentials", "credential",
     "token", "secret", "shadow", ".aws", ".config/gcloud", "keyring", "session",
 )
+_FILE_WRITE_OPTIONS = frozenset({
+    "append", "in-place", "output", "output-file", "save", "save-to", "tee",
+    "write", "write-file",
+})
+_HTTP_MUTATION_OPTIONS = frozenset({
+    "data", "data-ascii", "data-binary", "data-raw", "data-urlencode", "form",
+    "form-string", "json", "upload-file",
+})
+_HTTP_METHODS = frozenset({"post", "put", "patch", "delete", "connect"})
 _METACHARACTERS = re.compile(r"(?:\|\||&&|>>|[|<>;`$*?\[\]{}~]|[\r\n\x00])")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -86,9 +100,38 @@ def validate_read_argv(executable: str, argv: Sequence[str], *, help_only: bool 
     folded = tuple(item.casefold() for item in argv)
     if any(marker in item for item in folded for marker in _SECRET_MARKERS):
         return ReadValidation(ReadClassification.BLOCKED, "SENSITIVE_DATA_TARGET")
-    if any(item in {"-c", "--command"} for item in folded):
-        return ReadValidation(ReadClassification.BLOCKED, "COMMAND_INTERPRETER_OPTION")
+    if exe == "find" and any(item in {"-exec", "-execdir", "-ok", "-okdir"} for item in folded):
+        return ReadValidation(ReadClassification.BLOCKED, "INDIRECT_EXECUTION")
     words = tuple(item.lstrip("-").split("=", 1)[0] for item in folded if not item.startswith("/"))
+    option_names = {
+        item[2:].split("=", 1)[0] for item in folded if item.startswith("--")
+    }
+    if option_names & (_MUTATION_VERBS | _FILE_WRITE_OPTIONS):
+        return ReadValidation(ReadClassification.MUTATION, "MUTATION_OPTION")
+    if exe == "sed" and any(item == "-i" or item.startswith("-i") for item in folded):
+        return ReadValidation(ReadClassification.MUTATION, "IN_PLACE_WRITE")
+    if exe == "tar" and any(item.startswith("-") and "x" in item.lstrip("-") for item in folded):
+        return ReadValidation(ReadClassification.MUTATION, "ARCHIVE_EXTRACTION")
+    if exe in {"curl", "http", "https", "httpie"}:
+        if folded and folded[0] in _HTTP_METHODS:
+            return ReadValidation(ReadClassification.MUTATION, "NETWORK_MUTATION_METHOD")
+        if exe in {"http", "https", "httpie"} and any(
+            "=" in item and "==" not in item and not item.startswith("http") for item in argv
+        ):
+            return ReadValidation(ReadClassification.MUTATION, "NETWORK_MUTATION_FIELD")
+        if option_names & _HTTP_MUTATION_OPTIONS or any(
+            item in {"-d", "-F", "-T", "-o", "-O"} for item in argv
+        ):
+            return ReadValidation(ReadClassification.MUTATION, "NETWORK_MUTATION_OPTION")
+        for index, item in enumerate(argv):
+            lowered = item.casefold()
+            if item.startswith("-X") and item[2:].casefold() in _HTTP_METHODS:
+                return ReadValidation(ReadClassification.MUTATION, "NETWORK_MUTATION_METHOD")
+            if item in {"-X", "--request"} and index + 1 < len(folded) \
+                    and folded[index + 1] in _HTTP_METHODS:
+                return ReadValidation(ReadClassification.MUTATION, "NETWORK_MUTATION_METHOD")
+            if lowered.startswith("--request=") and lowered.split("=", 1)[1] in _HTTP_METHODS:
+                return ReadValidation(ReadClassification.MUTATION, "NETWORK_MUTATION_METHOD")
     # Known mutation vocabulary wins even when followed by --help. This prevents
     # help-shaped requests from laundering a mutation through the READ boundary.
     # Only the command position is generic: later argv values can legitimately be
