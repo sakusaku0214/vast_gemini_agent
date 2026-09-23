@@ -408,3 +408,38 @@ def test_ssh_known_hosts_option_has_no_embedded_quotes(tmp_path, monkeypatch, ho
     )
     assert option == f"UserKnownHostsFile={known.resolve().as_posix()}"
     assert '"' not in option
+
+
+
+def test_windows_runtime_stop_uses_taskkill(tmp_path, monkeypatch):
+    paths = RuntimePaths(tmp_path)
+    paths.create()
+    runtime = RuntimeManager(paths)
+    paths.process_state.write_text(
+        '{"pid":321,"started_at":"2026-01-01T00:00:00+00:00"}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("vast_agent.runtime.os.name", "nt")
+    monkeypatch.setattr(
+        runtime,
+        "status",
+        lambda: ("RUNNING", {"pid": 321}),
+    )
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(tuple(args))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    seen = iter(["python vast-agent-run-discord", None])
+    monkeypatch.setattr(runtime, "_command_line", lambda pid: next(seen))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ok, detail = runtime.stop(grace=0.2)
+
+    assert ok
+    assert detail == "stopped"
+    assert ("taskkill", "/PID", "321") in calls
+    assert not paths.process_state.exists()
