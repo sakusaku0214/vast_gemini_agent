@@ -362,7 +362,12 @@ class InvestigationAgent:
             if not response.function_calls:
                 break
             stop_execution = False
+            continued_call_ids: set[str] = set()
             for call_index, call in enumerate(response.function_calls):
+                # A READ selected in the same model plan may have been carried through
+                # executable discovery and executed with the resolved absolute path.
+                if call.call_id in continued_call_ids:
+                    continue
                 if cancellation and cancellation.cancelled:
                     return InvestigationResult(summary="調査はキャンセルされました。", recommended_action="NONE",
                                                stop_reason=StopReason.CANCELLED)
@@ -420,12 +425,18 @@ class InvestigationAgent:
                 })
                 continuation = self._discovery_continuation(
                     call.name, call.arguments, output, session,
+                    response.function_calls[call_index + 1:],
                 )
                 if continuation is not None and session.can_call():
-                    path, argv = continuation
+                    path, argv, requires_sudo, reason, planned_call_id = continuation
+                    continuation_call_id = planned_call_id or f"{call.call_id}:continuation"
+                    if planned_call_id:
+                        # Consume the planned call before execution so an evidence-bound
+                        # result cannot cause the unresolved-name form to run a second time.
+                        continued_call_ids.add(planned_call_id)
                     continuation_args = {
                         "host": host, "executable": path, "argv": argv,
-                        "requires_sudo": False, "reason": "continue the requested READ after PATH discovery",
+                        "requires_sudo": requires_sudo, "reason": reason,
                     }
                     continuation_output = self.functions.execute(
                         "run_readonly_argv", continuation_args, host,
@@ -439,11 +450,20 @@ class InvestigationAgent:
                     ):
                         inputs.append({
                             "type": "function_result", "name": "run_readonly_argv",
-                            "call_id": f"{call.call_id}:continuation",
+                            "call_id": continuation_call_id,
                             "result": [{"type": "text", "text": json.dumps({
                                 "untrusted_evidence_record": continuation_record.model_dump(mode="json"),
                                 "continued_from": call.call_id,
                             }, ensure_ascii=False)}],
+                        })
+                    elif planned_call_id:
+                        inputs.append({
+                            "type": "function_result", "name": "run_readonly_argv",
+                            "call_id": continuation_call_id,
+                            "result": [{"type": "text", "text": json.dumps({
+                                "read_executed": True, "result_retained": False,
+                                "reason": "EVIDENCE_BOUND_REACHED",
+                            })}],
                         })
             if stop_execution:
                 break
@@ -463,13 +483,37 @@ class InvestigationAgent:
     @staticmethod
     def _discovery_continuation(
         name, arguments, output, session: InvestigationSession | None = None,
-    ) -> tuple[str, list[str]] | None:
-        """Execute an already-selected READ immediately after absolute-path discovery."""
+        pending_calls: list[object] | None = None,
+    ) -> tuple[str, list[str], bool, str, str | None] | None:
+        """Carry an already-selected READ through absolute-path discovery."""
         if name != "query_executable":
             return None
         argv = arguments.get("continuation_argv")
+        requires_sudo = False
+        reason = "continue the requested READ after PATH discovery"
+        planned_call_id = None
         payload = output.get("untrusted_evidence", {})
         path = payload.get("path") if isinstance(payload, dict) else None
+        if not isinstance(argv, list) or not argv:
+            wanted = str(arguments.get("executable_name", "")).casefold()
+            query_host = arguments.get("host")
+            for pending in pending_calls or []:
+                if getattr(pending, "name", None) != "run_readonly_argv":
+                    continue
+                try:
+                    selected = HOST_READ_CAPABILITIES[
+                        "run_readonly_argv"
+                    ].argument_model.model_validate(pending.arguments)
+                except ValidationError:
+                    continue
+                executable = selected.executable.rsplit("/", 1)[-1].casefold()
+                if executable != wanted or selected.host != query_host or not selected.argv:
+                    continue
+                argv = selected.argv
+                requires_sudo = selected.requires_sudo
+                reason = selected.reason
+                planned_call_id = pending.call_id
+                break
         if (not isinstance(argv, list) or not argv) and session is not None:
             wanted = str(arguments.get("executable_name", "")).casefold()
             for selected in reversed(session.selected_calls):
@@ -480,12 +524,17 @@ class InvestigationAgent:
                 candidate = prior.get("argv")
                 if executable == wanted and isinstance(candidate, list) and candidate:
                     argv = candidate
+                    requires_sudo = bool(prior.get("requires_sudo", False))
+                    if isinstance(prior.get("reason"), str):
+                        reason = prior["reason"]
                     break
         if not isinstance(path, str) or not isinstance(argv, list) or not argv:
             return None
         if validate_read_argv(path, argv).classification != ReadClassification.READ:
             return None
-        return path, [str(value) for value in argv]
+        return (
+            path, [str(value) for value in argv], requires_sudo, reason, planned_call_id,
+        )
 
     def synthesize_fleet(
         self, goal: str, hosts: tuple[str, ...], results: dict[str, InvestigationResult],
