@@ -11,10 +11,8 @@ from pathlib import Path
 
 from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import GoogleInteractionsClient
-from vast_agent.agent.models import Route
 from vast_agent.agent.orchestrator import InvestigationAgent
 from vast_agent.agent.prompts import SYSTEM_PROMPT
-from vast_agent.agent.router import route_intent
 from vast_agent.config import (
     ConfigError,
     initialize_config,
