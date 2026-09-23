@@ -158,8 +158,8 @@ class InvestigationAgent:
             self._trim_rounds(recent_rounds, archived_ledger)
 
         log.warning(
-            "Agent budget exhausted llm_calls=%s tool_calls=%s elapsed=%.1fs "
-            "limits(llm=%s tools=%s steps=%s wall=%ss)",
+            "Agent investigation budget exhausted llm_calls=%s tool_calls=%s elapsed=%.1fs "
+            "limits(llm=%s tools=%s steps=%s wall=%ss); attempting final synthesis",
             llm_calls,
             tool_calls,
             time.monotonic() - start,
@@ -168,6 +168,49 @@ class InvestigationAgent:
             self.settings.max_agent_steps,
             self.settings.agent_wall_time_seconds,
         )
+
+        # A tool-seeking model turn may consume the final investigation call.
+        # Always give Gemini one tool-free synthesis turn so the last successful
+        # function result can actually be turned into an answer.
+        if recent_rounds or archived_ledger:
+            try:
+                final_inputs = self._inputs(base_text, recent_rounds, archived_ledger)
+                final_inputs.append({
+                    "type": "user_input",
+                    "content": [{
+                        "type": "text",
+                        "text": (
+                            "調査用の追加ツール呼び出しはここで終了です。"
+                            "これまでに取得済みの証拠だけを使って現在の質問に回答してください。"
+                            "断定できない点は、その不確実性を明示してください。"
+                        ),
+                    }],
+                })
+                response = self.client.interact(
+                    model=self.settings.model,
+                    inputs=final_inputs,
+                    system_instruction=SYSTEM_PROMPT,
+                    tools=[],
+                    thinking_level=self.settings.investigate_thinking_level,
+                    store=self.settings.store_interactions,
+                )
+                self.database.save_token_usage(
+                    "simple-v2-final",
+                    self.settings.model,
+                    self.settings.investigate_thinking_level,
+                    response.usage,
+                )
+                if response.output_text:
+                    log.info(
+                        "Agent final synthesis completed after budget exhaustion "
+                        "llm_calls=%s tool_calls=%s",
+                        llm_calls + 1,
+                        tool_calls,
+                    )
+                    return response.output_text.strip()
+            except Exception:
+                log.exception("Gemini final synthesis failed after investigation budget exhaustion")
+
         return "操作上限に達しました。得られた証拠だけでは回答を確定できませんでした。"
 
     def _trim_rounds(
