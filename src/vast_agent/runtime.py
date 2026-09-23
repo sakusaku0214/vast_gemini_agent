@@ -72,13 +72,15 @@ class RuntimeManager:
         pid = int(state["pid"])
         try:
             if os.name == "nt":
-                try:
-                    os.kill(pid, signal.CTRL_BREAK_EVENT)
-                except OSError:
-                    # A detached process may not share a console. Identity was already verified;
-                    # taskkill without /F is the safe graceful fallback.
-                    subprocess.run(["taskkill", "/PID", str(pid)], capture_output=True,
-                                   timeout=5, check=False)
+                # Detached Windows processes frequently reject CTRL_BREAK_EVENT with
+                # WinError 87. Identity was already verified by status(), so use
+                # taskkill without /F as the graceful stop path.
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid)],
+                    capture_output=True,
+                    timeout=5,
+                    check=False,
+                )
             else:
                 os.kill(pid, signal.SIGTERM)
             deadline = time.monotonic() + grace
