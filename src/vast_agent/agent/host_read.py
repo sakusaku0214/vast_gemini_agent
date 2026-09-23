@@ -57,8 +57,8 @@ HOST_READ_CAPABILITIES: Final[dict[str, HostReadCapability]] = {
         HostReadCapability("get_recent_incidents", "Read compact incident summaries when history is relevant.", "history", RecentIncidentsArgs, "legacy"),
         HostReadCapability("query_package", "Check whether one validated Debian package is installed.", "packages", PackageQueryArgs, "generic"),
         HostReadCapability("query_executable", "Resolve one validated executable name without exposing PATH.", "executables", ExecutableQueryArgs, "generic"),
-        HostReadCapability("query_cli_help", "Read bounded, untrusted CLI help using executable plus argv; no shell.", "discovery", CliArgvArgs, "generic"),
-        HostReadCapability("run_readonly_argv", "Run a code-validated READ argv for an installed executable; mutations become Proposal candidates.", "discovery", CliArgvArgs, "generic"),
+        HostReadCapability("query_cli_help", "Read bounded CLI help using executable plus argv; supports typed non-interactive sudo, never shell.", "discovery", CliArgvArgs, "generic"),
+        HostReadCapability("run_readonly_argv", "Run a validated READ argv, optionally with typed non-interactive sudo; mutations become Proposal candidates.", "discovery", CliArgvArgs, "generic"),
         HostReadCapability("query_service", "Read one validated systemd service state.", "services", ServiceQueryArgs, "generic"),
         HostReadCapability("inspect_network", "Read bounded link, address, or route information.", "network", NetworkInspectionArgs, "generic"),
         HostReadCapability("inspect_interface", "Read bounded details for one validated network interface.", "network", InterfaceInspectionArgs, "generic"),
@@ -283,6 +283,7 @@ def execute_generic(name: str, args: BaseModel, host: Host, remote: Executor) ->
         return run_validated_read(
             remote, host, args.executable, args.argv,  # type: ignore[attr-defined]
             help_only=name == "query_cli_help",
+            requires_sudo=args.requires_sudo,  # type: ignore[attr-defined]
         )
     if name == "query_traffic_history":
         return _traffic_history(args, host, remote)
@@ -300,13 +301,24 @@ def execute_generic(name: str, args: BaseModel, host: Host, remote: Executor) ->
     if name == "query_executable":
         executable = args.executable_name  # type: ignore[attr-defined]
         result = _run(remote, name, host, ("which", "--", executable))
-        if result.exit_code == 1:
-            return {"executable": executable, "exists": False, "path": None}
-        if not result.success:
-            return {"executable": executable, "exists": None, **_error(result)}
-        path = result.stdout.splitlines()[0].strip() if result.stdout.strip() else None
+        path = result.stdout.splitlines()[0].strip() if result.success and result.stdout.strip() else None
         if path and (not path.startswith("/") or len(path) > 256 or any(char.isspace() for char in path)):
             path = None
+        # A non-interactive PATH is only one piece of evidence. Probe bounded,
+        # code-owned user/system locations without evaluating shell startup files.
+        if path is None:
+            candidates = (
+                f"/home/{host.ssh_user}/.local/bin/{executable}",
+                f"/home/{host.ssh_user}/bin/{executable}",
+                f"/usr/local/bin/{executable}", f"/usr/bin/{executable}",
+            )
+            for candidate in candidates:
+                probe = _run(remote, f"{name}:candidate", host, ("test", "-x", candidate))
+                if probe.success:
+                    path = candidate
+                    break
+        if path is None and result.exit_code not in {0, 1, 127}:
+            return {"executable": executable, "exists": None, **_error(result)}
         return {"executable": executable, "exists": bool(path), "path": path}
     if name == "query_service":
         supplied = args.service_name  # type: ignore[attr-defined]

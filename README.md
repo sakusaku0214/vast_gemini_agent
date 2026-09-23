@@ -18,9 +18,9 @@ Vast Gemini Agent は、Windows 11 上で動作し、Discord から LAN 内の V
 
 ## 基本方針
 
-**Think freely. Execute only with approval. — 「考えるのは自由、実行は承認制」**
+**Think freely. READ freely. WRITE only after owner approval. — 「調べる・考えるのは自由。変更だけ OWNER 承認制」**
 
-- **READ:** code-side validator が read-only と確認した操作は自動実行できます。
+- **READ:** code-side validator が read-only と確認した操作は、検証済み sudo READ を含め自動実行できます。
 - **WRITE:** Agent は自由に調査・推論して exact plan を作れますが、実行には OWNER の Approve が必須です。
 - **Hard safety floor:** 破壊的または security-sensitive な少数の操作は、承認されても実行しません。
 
@@ -68,7 +68,7 @@ Discord / CLI
 
 ## Sudo model
 
-Operation Plan は `requires_sudo: true/false` と実際の executable / argv を別々に保持します。モデルが `sudo ...` という shell string を生成することはありません。Executor だけが承認済み plan を `sudo -n <executable> <argv...>` に変換し、fresh preflight で `sudo -n true` を確認します。
+READ request と Operation Plan は `requires_sudo: true/false` と実際の executable / argv を別々に保持します。sudo は privilege requirement であって mutation classification ではありません。モデルが `sudo ...` という shell string を生成することはありません。Executor だけが validated READ または承認済み plan を `sudo -n <executable> <argv...>` に変換し、先に `sudo -n true` を確認します。
 
 password prompt や password の保存・入力は扱いません。sudoers は必要な executable と引数に最小化してください。`NOPASSWD: ALL` は推奨しません。
 
@@ -86,16 +86,17 @@ evidence もサイズを制限して保存します（生ログは保存しま�
 
 Agent は次の reusable flow を使えます。
 
-1. `query_executable` で installed executable を確認
-2. `query_cli_help` で bounded `--help` / subcommand help を取得
-3. help を syntax evidence として解釈
-4. `run_readonly_argv` に executable と `argv[]` を渡す
-5. code が READ / MUTATION / UNCERTAIN / BLOCKED を再分類
-6. READ のみ自動実行し、mutation/uncertain は Operation Proposal 側へ送る
+1. 目的から concrete executable + `argv[]` を構成できれば、まず `run_readonly_argv` に渡す
+2. code が shell、secret、mutation risk と argv bounds を検証し、安全な READ を実行する
+3. 結果を読み、必要なら次の READ を選ぶ
+4. command-not-found なら executable discovery、permission denied なら同じ READ の typed sudo retry、
+   syntax error なら bounded help、missing file なら location/config discovery を行う
+5. evidence が十分になるまで budget、duplicate detection、timeout、cancellation の範囲で適応する
+6. mutation が必要になった場合だけ Operation Proposal 側へ送る
 
 たとえば `vastai --help`、`vastai show machines`、`docker ps`、`nvidia-smi -L` は shell string ではなく argv として扱います。`|`, redirects, `&&`, `;`, command substitution、shell expansion、`sh -c`、`bash -c`、`eval` は拒否します。stdout/stderr は timeout、byte/line limit、UTF-8 replacement、control-character cleanup、secret redaction を通ります。
 
-CLI 名の巨大な permission catalog はありません。installed executable、help evidence、argv validation、risk classification を組み合わせます。未知 verb は自動 READ にせず、conservative に Proposal または clarification へ倒します。
+CLI 名の巨大な permission catalog はありません。未知 CLI も catalog 登録や事前の `which` 成功を要求せず、具体的な argv を risk validation して READ として試します。`query_executable`、package/capability registry、help は permission gate ではなく、直接実行の失敗後や構文が不明な場合に使う discovery evidence です。既知の mutation は WRITE のままです。
 
 ### Catalogs and registries
 
@@ -104,8 +105,8 @@ CLI 名の巨大な permission catalog はありません。installed executable
 - `HOST_READ_CAPABILITIES` は typed arguments、host binding、bounded output を持つ安全な callable READ API surface です。
 - acquisition metadata registry は `traffic_history → vnstat`、interface detail → `ethtool`、NVMe health → `nvme-cli` のような、選択された自動取得候補だけを保持します。一般的な capability catalog ではありません。
 - generic CLI discovery は acquisition metadata にない installed executable も `query_executable → query_cli_help → run_readonly_argv` で調査できます。
-- `operations.allowed_actions` は既存 typed action の execution deployment policy です。
-- `operations.generic_operations_enabled` は generic mutation execution の独立 policy です。
+- `operations.allowed_actions` は後方互換の metadata であり、承認済み WRITE の permission boundary ではありません。
+- `operations.generic_operations_enabled` は deprecated な後方互換 field です。`operations.enabled` が唯一の WRITE feature gate です。
 
 `SCOPES` / `WRITE_WORDS` / `AGENT_WORDS` は明白な要求を低 latency で処理する fast path にすぎません。
 該当しない host-context message もそのまま Investigation Agent に届きます。mandatory semantic
@@ -166,7 +167,7 @@ Approve 後は fresh preflight、fingerprint 照合、exact operation の一回�
 - `VM_MODE_DISABLE`
 - `HOST_REBOOT`
 
-`operations.allowed_actions` は execution deployment policy です。NLU が操作を理解するための capability catalog ではありません。blocked action も正確に説明できますが、明示的に有効化されていない class は実行しません。upgrade で新しい dangerous class が暗黙に有効になることはありません。
+Typed action は specialized preflight / verification を提供する optimization です。`operations.allowed_actions` は後方互換 metadata にすぎず、NLU、capability、または OWNER 承認後の permission boundary ではありません。通常の単一 host WRITE は `operations.enabled: true` と OWNER approval で実行可能です。
 
 ## Hard prohibited operations
 
@@ -178,6 +179,7 @@ Approve 後は fresh preflight、fingerprint 照合、exact operation の一回�
 - approval / safety mechanism の無効化
 - implicit target または fleet-wide generic mutation
 - firmware flashing（将来、専用 admin mechanism が実装されるまで）
+- argv validation を迂回する shell / interpreter execution（`bash -c`、`sh -c`、`eval` など）
 
 READ でも data sensitivity を判定し、`~/.ssh`、credential store、environment/token dump などは自動実行しません。
 
@@ -212,8 +214,8 @@ runtime:    %LOCALAPPDATA%\VastGeminiAgent
 主な設定:
 
 - `operations.enabled`: mutation execution 全体の master switch（default `false`）
-- `operations.generic_operations_enabled`: generic approved argv execution の独立 opt-in（default `false`）
-- `operations.allowed_actions`: typed action class ごとの execution policy（default empty）
+- `operations.generic_operations_enabled`: deprecated compatibility field（値にかかわらず追加 gate にはなりません）
+- `operations.allowed_actions`: deprecated compatibility metadata（承認済み WRITE を拒否しません）
 - `operations.approval_ttl_seconds`: Proposal expiry
 - action / reboot / SSH / external tool timeout
 - Gemini model、thinking level、step/tool budgets
@@ -221,9 +223,9 @@ runtime:    %LOCALAPPDATA%\VastGeminiAgent
 - host registry、aliases、capabilities、SSH endpoint
 - pinned SSH host keys と最小 passwordless sudo
 
-安全な migration のため、generic approved operation execution は `operations.enabled` と
-`operations.generic_operations_enabled` の両方を明示的に有効化するまで default deny です。
-Proposal の理解や表示と execution permission は別です。
+`operations.enabled: false` では従来どおり全 WRITE を実行しません。`true` の場合は Proposal と OWNER
+Approve が通常の単一 host WRITE の authorization boundary です。旧 `generic_operations_enabled` と
+`allowed_actions` は設定ファイル互換のため読み込みますが、二重の execution gate にはしません。
 
 ### Secret の優先順位と Bot の共存
 

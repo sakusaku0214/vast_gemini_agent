@@ -296,8 +296,6 @@ class AgentService:
         state.write_context_host = None
         self.conversations.save(owner, channel, state)
         rendered = render_operation_proposal(plan, proposal.id, proposal.expires_at.isoformat())
-        if not self.actions.settings.generic_operations_enabled:
-            rendered += "\nPolicy: generic operation execution is disabled"
         return ServiceReply(self._clean(rendered), proposal=proposal, policy="ALLOW")
 
     async def _propose_generic_operation(self, text, owner, channel, state) -> ServiceReply:
@@ -324,8 +322,6 @@ class AgentService:
         state.write_context_host = None
         self.conversations.save(owner, channel, state)
         rendered = render_operation_proposal(plan, proposal.id, proposal.expires_at.isoformat())
-        if not self.actions.settings.generic_operations_enabled:
-            rendered += "\nPolicy: generic operation execution is disabled"
         return ServiceReply(self._clean(rendered), proposal=proposal, policy="ALLOW")
 
     @staticmethod
@@ -409,14 +405,10 @@ class AgentService:
             return None, None, [host.name for host in matches]
         if len(matches) == 1:
             return matches[0], "current message", []
-        concrete_target = bool(re.search(
-            r"GPU\s*[0-9]+|C\.[0-9]+|[A-Za-z0-9_.@-]+\.service",
-            text, re.I,
-        ))
         vague_only = folded.strip() in {"そっち", "それ", "あれ", "適当に", "そっち適当に絞って"}
         if (self.remember_last_host and state.last_host and state.last_scope
                 and state.write_context_host == state.last_host
-                and concrete_target and not vague_only and not self._is_explicit_fleet(folded)):
+                and not vague_only and not self._is_explicit_fleet(folded)):
             try:
                 return self.registry.resolve(state.last_host), "conversation context", []
             except KeyError:

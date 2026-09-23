@@ -19,6 +19,16 @@ class RecordingExecutor:
         return ToolResult(success=True, exit_code=0, stdout="ok\x00\n", duration_ms=1)
 
 
+class FailingExecutor(RecordingExecutor):
+    def __init__(self, result):
+        super().__init__()
+        self.result = result
+
+    def execute(self, host, command, timeout, cancellation=None):
+        self.calls.append((host.name, tuple(command), timeout))
+        return self.result
+
+
 def host():
     return Host(name="x570", address="192.0.2.1", ssh_user="agent")
 
@@ -53,10 +63,12 @@ def test_help_and_flag_forms_cannot_disguise_mutations(executable, argv):
     assert remote.calls == []
 
 
-def test_unknown_and_secret_reads_fail_closed():
-    assert validate_read_argv("some-cli", ["frobnicate"]).classification == ReadClassification.UNCERTAIN
+def test_unknown_safe_cli_is_not_catalog_gated_but_secrets_are_blocked():
+    assert validate_read_argv("some-cli", ["frobnicate"]).classification == ReadClassification.READ
     assert validate_read_argv("cat", ["~/.ssh/id_rsa"]).classification == ReadClassification.BLOCKED
     assert validate_read_argv("printenv", []).classification == ReadClassification.BLOCKED
+    assert validate_read_argv("ssh", ["other-host", "status"]).classification == ReadClassification.BLOCKED
+    assert validate_read_argv("curl", ["https://example.invalid"]).classification == ReadClassification.BLOCKED
 
 
 def test_output_is_bounded_clean_and_redacted():
@@ -79,6 +91,36 @@ def test_validator_is_an_execution_boundary():
     assert remote.calls == [("x570", ("vastai", "show", "machines"), 15)]
 
 
+def test_sudo_read_is_typed_preflighted_and_not_a_write():
+    remote = RecordingExecutor()
+    result = run_validated_read(
+        remote, host(), "crontab", ["-l"], requires_sudo=True,
+    )
+    assert result["classification"] == ReadClassification.READ
+    assert result["requires_sudo"] is True
+    assert remote.calls == [
+        ("x570", ("sudo", "-n", "true"), 15),
+        ("x570", ("sudo", "-n", "crontab", "-l"), 15),
+    ]
+
+
+@pytest.mark.parametrize(("result", "kind", "next_fragment"), [
+    (ToolResult(success=False, exit_code=127, stderr="command not found", duration_ms=1),
+     "command_not_found", "discover executable"),
+    (ToolResult(success=False, exit_code=126, stderr="Permission denied", duration_ms=1),
+     "permission_denied", "requires_sudo=true"),
+    (ToolResult(success=False, exit_code=2, stderr="unknown option\nUsage: novel", duration_ms=1),
+     "syntax_error", "--help"),
+    (ToolResult(success=False, exit_code=1, stderr="No such file", duration_ms=1),
+     "missing_file", "location"),
+])
+def test_read_failure_is_adaptive_evidence(result, kind, next_fragment):
+    output = run_validated_read(FailingExecutor(result), host(), "novel-cli", ["observe"])
+    assert output["classification"] == ReadClassification.READ
+    assert output["failure_kind"] == kind
+    assert next_fragment in output["suggested_next_read"]
+
+
 @pytest.mark.parametrize(("executable", "argv", "expected"), [
     ("last", ["-x", "reboot", "shutdown"], ReadClassification.READ),
     ("journalctl", ["-b", "-1", "-n", "30", "--no-pager"], ReadClassification.READ),
@@ -90,8 +132,13 @@ def test_validator_is_an_execution_boundary():
     ("lsblk", ["-J"], ReadClassification.READ),
     ("uname", ["-r"], ReadClassification.READ),
     ("docker", ["ps", "-a"], ReadClassification.READ),
+    ("docker", ["container", "restart", "worker"], ReadClassification.MUTATION),
     ("virsh", ["list", "--all"], ReadClassification.READ),
     ("nvidia-smi", ["-q"], ReadClassification.READ),
+    ("nvidia-smi", ["-q", "-d", "CLOCK"], ReadClassification.READ),
+    ("nvidia-smi", ["-i", "0", "-q", "-d", "CLOCK"], ReadClassification.READ),
+    ("crontab", ["-l"], ReadClassification.READ),
+    ("crontab", ["-r"], ReadClassification.MUTATION),
     ("systemctl", ["restart", "vastai"], ReadClassification.MUTATION),
     ("nvidia-smi", ["--gpu-reset"], ReadClassification.MUTATION),
 ])

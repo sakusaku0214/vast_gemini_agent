@@ -68,9 +68,9 @@ def test_proposal_is_self_contained():
     ("systemctl", ["restart", "libvirtd.service"]),
     ("apt-get", ["install", "nvitop"]),
 ])
-def test_generic_plan_cannot_bypass_typed_action_safety(executable, argv):
-    with pytest.raises(ValidationError):
-        plan(
-            executable=executable, argv=argv, target="explicit target",
-            verification_kind="unavailable", verification_target=None,
-        )
+def test_ordinary_admin_operations_are_representable(executable, argv):
+    operation = plan(
+        executable=executable, argv=argv, target="explicit target",
+        verification_kind="unavailable", verification_target=None,
+    )
+    assert operation.executable == executable

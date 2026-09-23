@@ -24,8 +24,6 @@ class PolicyEngine:
         reasons: list[str] = []
         if execution and not settings.enabled:
             reasons.append("OPERATIONS_DISABLED")
-        if execution and request.action_type.value not in settings.allowed_actions:
-            reasons.append("ACTION_NOT_ALLOWED")
         if not state.host_enabled: reasons.append("HOST_DISABLED")
         if not state.ssh_reachable: reasons.append("SSH_UNREACHABLE")
         if not state.sudo_available: reasons.append("SUDO_NOT_AVAILABLE")
@@ -63,11 +61,6 @@ class PolicyEngine:
             if state.running_vm: reasons.append("RUNNING_VM")
         if reasons: return PolicyResult(decision=PolicyDecision.BLOCK, reasons=reasons)
         warnings = []
-        # allowed_actions is execution policy, not an NLU/capability catalog.  A
-        # disabled class remains understandable and can be rendered accurately,
-        # but the execution-time check above can never be bypassed by approval.
-        if request.action_type.value not in settings.allowed_actions:
-            warnings.append("ACTION_EXECUTION_DISABLED")
         if request.action_type == ActionType.RESTART_DOCKER_SERVICE and state.active_workload:
             warnings.append("RUNNING_CONTAINERS")
         if state.d_state: warnings.append("D_STATE_PRESENT")

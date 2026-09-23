@@ -31,9 +31,10 @@ def compact_evidence(source: str, output: dict[str, object], max_chars: int) -> 
     error = output.get("error")
     payload = output.get("untrusted_evidence", output)
     nested_error = payload.get("error") if isinstance(payload, dict) else None
+    failed_read = isinstance(payload, dict) and payload.get("status") == "failed"
     if error in _UNAVAILABLE or nested_error in _UNAVAILABLE:
         status = "tool_unavailable"
-    elif error or (isinstance(payload, dict) and payload.get("error")):
+    elif error or (isinstance(payload, dict) and payload.get("error")) or failed_read:
         status = "evidence_missing"
     else:
         status = "available"
@@ -45,7 +46,10 @@ def compact_evidence(source: str, output: dict[str, object], max_chars: int) -> 
     signatures = facts.get("signatures", [])
     if not isinstance(signatures, list):
         signatures = []
-    missing = [] if status == "available" else [str(error or nested_error or "no usable evidence")]
+    failure_kind = payload.get("failure_kind") if isinstance(payload, dict) else None
+    missing = [] if status == "available" else [
+        str(error or nested_error or failure_kind or "no usable evidence")
+    ]
     return EvidenceRecord(
         source=source, status=status, facts=facts,
         signatures=[str(value) for value in signatures[:12]],

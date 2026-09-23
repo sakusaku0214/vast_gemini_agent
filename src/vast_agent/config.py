@@ -70,7 +70,7 @@ class OperationsSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
-    # Upgrade-safe opt-in for generic approved argv.
+    # Deprecated compatibility field. ``enabled`` is the sole WRITE feature gate.
     generic_operations_enabled: bool = False
     # Keep configuration independent of actions.models to avoid a circular import.
     allowed_actions: list[AllowedAction] = Field(default_factory=list)
