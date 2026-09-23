@@ -44,8 +44,18 @@ class PlanningAgent:
         self.investigations = []
         self.plans = []
 
-    def investigate(self, host, question):
+    def investigate(self, host, question, context=None):
         self.investigations.append((host, question))
+        if "開放" in question:
+            result = InvestigationResult(
+                summary="GPU0 has locked clocks 1200-1800 MHz",
+                findings=["GPU 0 Locked Clocks Min 1200 MHz Max 1800 MHz"],
+                confidence="high", mutation_requested=True, mutation_goal=question,
+            )
+            result.ground_from_validated_evidence(
+                "GPU 0 Locked Clocks Min 1200 MHz Max 1800 MHz",
+            )
+            return result
         return InvestigationResult(
             summary="GPU0: SRBMiner active, 340W, 1800MHz, 70C; nvidia-smi help supports clock lock",
             findings=[
@@ -61,16 +71,21 @@ class PlanningAgent:
         self.plans.append((host, host_source, message, investigation.summary))
         if "foo.service" in message:
             return None
+        release = "開放" in message
         return OperationPlan(
             host=host, host_source=host_source, executable="nvidia-smi",
-            argv=["-i", "0", "--lock-gpu-clocks=1500,1500"], requires_sudo=True,
-            target="GPU 0", reason="reduce loaded GPU toward the requested 300 W target",
-            expected_effect="apply one bounded GPU clock restriction",
+            argv=["-i", "0", "--reset-gpu-clocks"] if release else
+                 ["-i", "0", "--lock-gpu-clocks=1500,1500"], requires_sudo=True,
+            target="GPU 0", reason=("release the observed GPU clock lock" if release else
+                                    "reduce loaded GPU toward the requested 300 W target"),
+            expected_effect=("release GPU clock restriction" if release else
+                             "apply one bounded GPU clock restriction"),
             known_side_effects=["active SRBMiner workload performance changes"],
             verification_plan="re-read GPU clock, power, temperature, utilization, and process",
             verification_kind="gpu_state", verification_target="0",
             command_source="bounded value derived from request + CLI help + READ evidence",
-            current_relevant_state="340 W, 1800 MHz, 70 C",
+            current_relevant_state=("GPU0 locked at 1200-1800 MHz" if release else
+                                    "340 W, 1800 MHz, 70 C"),
             active_workload="SRBMiner-MULTI active (materially affected)", running_vm="none",
             rollback="new Proposal for nvidia-smi --reset-gpu-clocks",
         )
@@ -126,6 +141,9 @@ def test_natural_clock_release_investigates_inherited_host_before_proposal(tmp_p
 
     assert reply.proposal is not None
     assert reply.proposal.plan.host_source == "conversation context"
+    assert reply.proposal.plan.argv == ["-i", "0", "--reset-gpu-clocks"]
+    assert "GPU0 locked at 1200-1800 MHz" in reply.text
+    assert "target grounding" not in reply.text
     assert agent.investigations == [(
         "garage-h12ssl-nt", "クロック制限入れてるから開放しておいて。どんなコマンド使ったか教えて",
     )]

@@ -76,7 +76,7 @@ class AgentService:
                     return ServiceReply(f"停止対象を指定してください。実行中: {candidates}")
                 target = int(running[0]["id"])
             return ServiceReply(f"Job #{target}: {self.jobs.cancel(target)}", target)
-        if self._requests_evidence_render(folded):
+        if self._requests_previous_evidence(folded):
             retained = state.investigation_context.get("relevant_excerpt")
             if isinstance(retained, str) and retained.strip():
                 return ServiceReply(self._render_evidence(retained))
@@ -355,6 +355,31 @@ class AgentService:
             r"一覧|内容|見せて|表示|そのまま|コマンド結果|貼って|流して|"
             r"(?:show|list|display|paste)(?:\s|$)", text, re.I,
         ))
+
+    @classmethod
+    def _requests_previous_evidence(cls, text: str) -> bool:
+        """Identify a high-confidence request to re-render the immediately prior result.
+
+        Display vocabulary alone is deliberately insufficient: it commonly modifies a
+        new investigation goal (for example ``docker一覧見せて``). Reuse requires an
+        anaphoric reference, or an otherwise subject-free request to deliver the result
+        into the current conversation surface.
+        """
+        if not cls._requests_evidence_render(text):
+            return False
+        previous_reference = re.search(
+            r"(?:それ|その(?:一覧|内容|結果)|さっきの|前の|直前の|もう一回|もう一度)", text,
+        )
+        if previous_reference:
+            return True
+        return bool(
+            re.fullmatch(
+                r"\s*(?:一覧|内容|結果)(?:を)?(?:discord|ここ|このチャンネル)(?:へ|に)?"
+                r"(?:流して|流せない[?？]?|貼って|出して|表示して)\s*",
+                text,
+                re.I,
+            )
+        )
 
     @staticmethod
     def _render_evidence(evidence: str) -> str:

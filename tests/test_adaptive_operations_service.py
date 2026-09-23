@@ -44,8 +44,17 @@ class ContextAwareAgent(ContextAgent):
 class EvidenceAgent(ContextAgent):
     def investigate(self, host, goal, context=None):
         self.calls.append((host, goal))
-        result = InvestigationResult(summary="root crontabを取得しました", confidence="high")
-        result._display_evidence = "0 * * * * /opt/vast/check.sh\n@reboot /opt/gpu/monitor"
+        if "docker" in goal.casefold():
+            summary = "docker containersを取得しました"
+            evidence = "worker-api running"
+        elif "seed" in goal:
+            summary = "unrelated evidence"
+            evidence = "unrelated retained data"
+        else:
+            summary = "root crontabを取得しました"
+            evidence = "0 * * * * /opt/vast/check.sh\n@reboot /opt/gpu/monitor"
+        result = InvestigationResult(summary=summary, confidence="high")
+        result._display_evidence = evidence
         result._context_evidence = {"relevant_excerpt": result._display_evidence}
         return result
 
@@ -142,6 +151,32 @@ def test_requested_crontab_content_is_rendered_and_reused_in_current_channel(tmp
     assert "@reboot /opt/gpu/monitor" in follow_up.text
     assert "cannot send" not in follow_up.text.casefold()
     assert len(agent.calls) == 1
+
+
+def test_new_display_goal_does_not_reuse_previous_crontab_evidence(tmp_path):
+    agent = EvidenceAgent()
+    service = make_service(tmp_path, agent)
+    asyncio.run(service.handle_question("h12sslのcrontab一覧見せて", 1, 2))
+
+    reply = asyncio.run(service.handle_question("docker一覧見せて", 1, 2))
+
+    assert "worker-api running" in reply.text
+    assert "/opt/vast/check.sh" not in reply.text
+    assert len(agent.calls) == 2
+
+
+def test_explicit_fresh_crontab_goal_ignores_unrelated_retained_evidence(tmp_path):
+    agent = EvidenceAgent()
+    service = make_service(tmp_path, agent)
+    asyncio.run(service.handle_question("h12sslのseedデータを見せて", 1, 2))
+
+    reply = asyncio.run(service.handle_question(
+        "h12sslのsudo crontabに何が入ってるか一覧見せて", 1, 2,
+    ))
+
+    assert "0 * * * * /opt/vast/check.sh" in reply.text
+    assert "unrelated retained data" not in reply.text
+    assert len(agent.calls) == 2
 
 
 def test_fleet_vnstat_is_ranked_and_partial_failure_is_preserved(tmp_path):
