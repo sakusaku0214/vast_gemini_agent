@@ -29,11 +29,15 @@ _UNAVAILABLE = {
 }
 
 _ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x1b\x07]*(?:\x07|\x1b\\))")
+# Output captured after an upstream control-character scrub can contain a CSI
+# sequence without its ESC byte.  Keep this deliberately limited to SGR colors;
+# matching arbitrary bracketed text would corrupt normal command output.
+_DAMAGED_SGR = re.compile(r"\[(?:\d{1,3}(?:;\d{1,3})*)?m")
 
 
 def strip_ansi(value: str) -> str:
     """Remove terminal control sequences without collapsing table whitespace."""
-    return _ANSI_ESCAPE.sub("", value)
+    return _DAMAGED_SGR.sub("", _ANSI_ESCAPE.sub("", value))
 
 
 def compact_evidence(source: str, output: dict[str, object], max_chars: int) -> EvidenceRecord:

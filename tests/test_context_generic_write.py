@@ -1,17 +1,22 @@
 import asyncio
+import json
 
 from vast_agent.actions.coordinator import ActionCoordinator
 from vast_agent.actions.executor import TypedActionExecutor
 from vast_agent.actions.models import PreflightSnapshot, VerificationResult
 from vast_agent.actions.operation_plan import OperationPlan
-from vast_agent.agent.models import InvestigationResult
+from vast_agent.agent.functions import FunctionExecutor
+from vast_agent.agent.gemini import ScriptedGeminiClient
+from vast_agent.agent.models import AgentResponse, InvestigationResult
+from vast_agent.agent.orchestrator import InvestigationAgent
 from vast_agent.agent.router import WRITE_WORDS
-from vast_agent.config import HostRegistry, OperationsSettings
+from vast_agent.config import GeminiSettings, HostRegistry, OperationsSettings
 from vast_agent.conversation.state import ConversationStore
 from vast_agent.jobs.manager import JobManager
 from vast_agent.models.host import Host
 from vast_agent.models.tool_result import ToolResult
 from vast_agent.services.agent_service import AgentService
+from vast_agent.services.inspection import InspectionService
 from vast_agent.storage.database import Database
 
 
@@ -149,6 +154,119 @@ def test_natural_clock_release_investigates_inherited_host_before_proposal(tmp_p
     )]
     assert db.pending_approval_count() == 1
     assert not any("--lock-gpu-clocks" in " ".join(call) for call in remote.calls)
+
+
+def test_clock_release_proposal_uses_real_fresh_read_path(tmp_path):
+    """Regression for production orchestration, not a pre-grounded InvestigationResult."""
+    db = Database(tmp_path / "real-path.sqlite")
+    db.migrate()
+    host = Host(
+        name="garage-h12ssl-nt", aliases=["h12ssl"], address="192.0.2.8", ssh_user="agent",
+    )
+    registry = HostRegistry(hosts={host.name: host})
+
+    class CommandRemote(Remote):
+        def execute(self, host, command, timeout, cancellation=None):
+            del host, timeout, cancellation
+            command = tuple(command)
+            self.calls.append(command)
+            output = {
+                ("nvidia-smi", "--query-gpu=index", "--format=csv,noheader,nounits"): "0\n1\n",
+                ("nvidia-smi", "-i", "0", "-q", "-d", "CLOCK"): (
+                    "GPU 00000000:01:00.0\n    GPU Locked Clocks\n"
+                    "        Min : 1200 MHz\n        Max : 1800 MHz\n"
+                ),
+                ("nvidia-smi", "-i", "1", "-q", "-d", "CLOCK"): (
+                    "GPU 00000000:02:00.0\n    GPU Locked Clocks\n"
+                    "        Min : N/A\n        Max : N/A\n"
+                ),
+                ("nvidia-smi", "--help"): "-rgc, --reset-gpu-clocks  Reset locked GPU clocks\n",
+            }.get(command, "")
+            return ToolResult(success=True, exit_code=0, stdout=output, duration_ms=1)
+
+    def tool_calls():
+        specs = [
+            ("run_readonly_argv", {
+                "host": host.name, "executable": "nvidia-smi",
+                "argv": ["--query-gpu=index", "--format=csv,noheader,nounits"],
+                "reason": "enumerate GPU indexes before checking every clock lock",
+            }),
+            ("run_readonly_argv", {
+                "host": host.name, "executable": "nvidia-smi",
+                "argv": ["-i", "0", "-q", "-d", "CLOCK"],
+                "reason": "read GPU 0 current clock-lock state",
+            }),
+            ("run_readonly_argv", {
+                "host": host.name, "executable": "nvidia-smi",
+                "argv": ["-i", "1", "-q", "-d", "CLOCK"],
+                "reason": "read GPU 1 current clock-lock state",
+            }),
+            ("query_cli_help", {
+                "host": host.name, "executable": "nvidia-smi", "argv": ["--help"],
+                "reason": "confirm bounded reset syntax",
+            }),
+        ]
+        return AgentResponse(steps=[{
+            "type": "function_call", "name": name, "arguments": args, "id": str(index),
+        } for index, (name, args) in enumerate(specs, 1)])
+
+    conclusion = AgentResponse(output_text=json.dumps({
+        "summary": "GPU 0だけに1200-1800 MHzのクロック制限があります。GPU 1は制限なしです。",
+        "findings": ["GPU indexes: 0, 1", "GPU 0 Locked Clocks 1200-1800 MHz", "GPU 1 N/A"],
+        "signatures": [], "confidence": "high", "recommended_action": "NONE",
+        "missing_evidence": [], "capability_gaps": [], "mutation_requested": True,
+        "mutation_goal": "クロック制限を開放", "stop_reason": "ANSWERABLE",
+    }))
+    expected_plan = OperationPlan(
+        host=host.name, host_source="conversation context", executable="nvidia-smi",
+        argv=["-i", "0", "--reset-gpu-clocks"], requires_sudo=True, target="GPU 0",
+        reason="fresh READ shows GPU 0 has locked clocks", expected_effect="release GPU 0 clock lock",
+        known_side_effects=["GPU clocks return to driver defaults"],
+        verification_plan="re-read GPU 0 clock state", verification_kind="gpu_state",
+        verification_target="0", command_source="fresh clock query and bounded nvidia-smi help",
+        current_relevant_state="GPU 0 Locked Clocks Min 1200 MHz Max 1800 MHz",
+        active_workload="unknown", running_vm="unknown",
+        rollback="a separately approved clock-lock Proposal",
+    )
+    client = ScriptedGeminiClient([
+        tool_calls(), conclusion,
+        AgentResponse(output_text=expected_plan.model_dump_json()),
+    ])
+    remote = CommandRemote()
+    inspection = InspectionService(db, tmp_path / "logs")
+    functions = FunctionExecutor(registry, inspection, db, remote)
+    agent = InvestigationAgent(client, functions, db, GeminiSettings())
+    settings = OperationsSettings(enabled=True, generic_operations_enabled=False)
+    actions = ActionCoordinator(
+        db, registry, settings, Preflight(), TypedActionExecutor(remote, settings), Verifier(), 7, 9,
+    )
+    app = AgentService(
+        registry, inspection, remote, JobManager(db), ConversationStore(db),
+        agent=agent, actions=actions,
+    )
+    state = app.conversations.get(7, 9)
+    state.last_host = host.name
+    state.last_scope = "gpu"
+    state.write_context_host = host.name
+    state.current_hosts = (host.name,)
+    state.context_kind = "single"
+    state.context_source = "explicit"
+    app.conversations.save(7, 9, state)
+
+    reply = asyncio.run(app.handle_question(
+        "クロック制限入れてるから開放しておいて。どんなコマンド使うか教えて", 7, 9,
+    ))
+
+    assert reply.proposal is not None
+    assert reply.proposal.plan == expected_plan
+    assert reply.proposal.plan.argv == ["-i", "0", "--reset-gpu-clocks"]
+    assert remote.calls[:4] == [
+        ("nvidia-smi", "--query-gpu=index", "--format=csv,noheader,nounits"),
+        ("nvidia-smi", "-i", "0", "-q", "-d", "CLOCK"),
+        ("nvidia-smi", "-i", "1", "-q", "-d", "CLOCK"),
+        ("nvidia-smi", "--help"),
+    ]
+    assert not any("--reset-gpu-clocks" in command for command in remote.calls)
 
 
 def test_application_write_intent_proposes_when_model_flag_is_false(tmp_path):

@@ -168,7 +168,8 @@ class InvestigationAgent:
         )
         result.ground_from_validated_evidence(evidence)
         excerpts = dict.fromkeys(
-            item.relevant_excerpt for item in session.evidence if item.relevant_excerpt
+            item.relevant_excerpt for item in InvestigationAgent._display_records(session)
+            if item.relevant_excerpt
         )
         result._display_evidence = "\n\n".join(excerpts)[:4000]
         paths = [
@@ -180,6 +181,31 @@ class InvestigationAgent:
             "executable_paths": paths[:4],
         }
         return result
+
+    @staticmethod
+    def _display_records(session: InvestigationSession):
+        """Select answer evidence independently from the complete reasoning cache."""
+        goal = session.goal.casefold()
+        wants_help = any(word in goal for word in ("help", "ヘルプ", "使い方", "構文"))
+        records = []
+        for item in session.evidence:
+            argv = [str(value).casefold() for value in item.arguments.get("argv", [])]
+            if (item.source == "query_cli_help" or "--help" in argv) and not wants_help:
+                continue
+            records.append(item)
+
+        # A rendered `vastai show machines` table is the requested deliverable.
+        # JSON and discovery/help reads remain available for synthesis, but are
+        # redundant (and often huge) display evidence when that table exists.
+        machine_tables = [
+            item for item in records
+            if "vastai" in str(item.arguments.get("executable", "")).casefold()
+            and [str(value).casefold() for value in item.arguments.get("argv", [])]
+            == ["show", "machines"]
+        ]
+        if machine_tables:
+            return machine_tables
+        return records
 
     @staticmethod
     def _fallback_from_evidence(session: InvestigationSession, *, summary: str,

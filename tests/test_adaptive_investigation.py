@@ -396,6 +396,29 @@ def test_cli_evidence_strips_ansi_and_deduplicates_display(tmp_path, host):
     assert result._display_evidence.count("42  rented") == 1
 
 
+def test_display_evidence_selects_machine_table_not_internal_json_or_help(host):
+    session = InvestigationSession(
+        target_host=host.name, goal="全体のレント状況をvastai show machinesで見てdiscordへ共有して",
+    )
+    for argv, stdout, source in (
+        (["--help"], "HELP giant usage", "query_cli_help"),
+        (["show", "machines", "--raw"], '[{"id": 42, "rented": true}]', "run_readonly_argv"),
+        (["show", "machines"], "ID  RENTED\n42  true", "run_readonly_argv"),
+    ):
+        output = {"untrusted_evidence": {
+            "status": "completed", "executable": "vastai", "argv": argv, "stdout": stdout,
+        }}
+        record = compact_evidence(source, output, 1800)
+        assert session.add(source, {"executable": "vastai", "argv": argv}, record)
+
+    result = InvestigationResult(summary="1 machine is rented")
+    InvestigationAgent._attach_validated_grounding(result, session)
+
+    assert result._display_evidence == "ID  RENTED\n42  true"
+    assert "HELP" not in result._display_evidence
+    assert '"id"' not in result._display_evidence
+
+
 def test_session_bounds_cache_and_evidence_compaction():
     session = InvestigationSession(
         target_host="host", goal="goal", max_tool_calls=1, max_rounds=1,

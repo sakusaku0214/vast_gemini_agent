@@ -109,6 +109,11 @@ def test_output_is_bounded_clean_and_redacted():
     assert len(result.encode()) <= 115
 
 
+def test_output_strips_ansi_before_control_characters():
+    assert sanitize_output("\x1b[40m\x1b[97mtext\x1b[0m") == "text"
+    assert sanitize_output("[48;5;240m[97mtext[0m") == "text"
+
+
 def test_validator_is_an_execution_boundary():
     remote = RecordingExecutor()
     blocked = run_validated_read(remote, host(), "systemctl", ["restart", "vastai.service"])
