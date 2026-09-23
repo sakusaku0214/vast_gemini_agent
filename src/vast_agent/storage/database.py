@@ -229,3 +229,27 @@ class Database:
                 "UPDATE write_proposals SET status=?,updated_at=? WHERE id=?",
                 (status, datetime.now(UTC).isoformat(), proposal_id),
             )
+
+
+    def claim_proposal(
+        self,
+        proposal_id: int,
+        owner_id: str,
+        channel_id: str,
+    ) -> dict[str, object] | None:
+        self.migrate()
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as db:
+            db.row_factory = sqlite3.Row
+            cursor = db.execute(
+                "UPDATE write_proposals SET status='EXECUTING',updated_at=? "
+                "WHERE id=? AND owner_id=? AND channel_id=? AND status='PENDING'",
+                (now, proposal_id, owner_id, channel_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = db.execute(
+                "SELECT * FROM write_proposals WHERE id=?",
+                (proposal_id,),
+            ).fetchone()
+        return dict(row) if row else None
