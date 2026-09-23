@@ -13,6 +13,7 @@ from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import GoogleInteractionsClient
 from vast_agent.agent.orchestrator import InvestigationAgent
 from vast_agent.agent.prompts import SYSTEM_PROMPT
+from vast_agent.approval import ProposalStore
 from vast_agent.config import (
     ConfigError,
     initialize_config,
@@ -118,9 +119,11 @@ def _agent(paths: RuntimePaths, registry, executor):
     if not key: return None
     database = Database(paths.database)
     secrets = _redaction_secrets(paths)
+    proposals = ProposalStore(database)
     functions = FunctionExecutor(
         registry,
         executor,
+        proposals,
         settings.max_evidence_chars_per_tool,
         secrets,
     )
@@ -139,11 +142,18 @@ def _service(paths: RuntimePaths, registry, executor) -> AgentService:
     secrets = _redaction_secrets(paths)
     inspection = InspectionService(database, paths.observation_logs,
                                    secrets)
-    return AgentService(registry, inspection, executor,
-                        JobManager(database, job_settings.max_recent_jobs),
-                        ConversationStore(database), _agent(paths, registry, executor),
-                        job_settings.max_parallel_hosts, secrets,
-                        conversation_settings.remember_last_host)
+    return AgentService(
+        registry,
+        inspection,
+        executor,
+        JobManager(database, job_settings.max_recent_jobs),
+        ConversationStore(database),
+        _agent(paths, registry, executor),
+        ProposalStore(database),
+        job_settings.max_parallel_hosts,
+        secrets,
+        conversation_settings.remember_last_host,
+    )
 
 
 def _discord_enabled(paths: RuntimePaths) -> bool:
