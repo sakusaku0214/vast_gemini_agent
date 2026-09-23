@@ -3,79 +3,115 @@ from __future__ import annotations
 import json
 import time
 
-from pydantic import ValidationError
-
 from vast_agent.agent.functions import FUNCTION_DECLARATIONS, FunctionExecutor
 from vast_agent.agent.gemini import GeminiClient
-from vast_agent.agent.models import InvestigationResult
 from vast_agent.agent.prompts import SYSTEM_PROMPT
-from vast_agent.config import GeminiSettings
+from vast_agent.config import GeminiSettings, HostRegistry
 from vast_agent.jobs.cancellation import current_cancellation
 from vast_agent.storage.database import Database
 
 
 class InvestigationAgent:
-    def __init__(self, client: GeminiClient, functions: FunctionExecutor, database: Database,
-                 settings: GeminiSettings) -> None:
-        self.client = client; self.functions = functions; self.database = database; self.settings = settings
+    """Small Gemini loop: think -> READ argv -> evidence -> think."""
 
-    def investigate(self, host: str, question: str) -> InvestigationResult:
-        start = time.monotonic(); tool_calls = 0; llm_calls = 0
+    def __init__(
+        self,
+        client: GeminiClient,
+        functions: FunctionExecutor,
+        database: Database,
+        settings: GeminiSettings,
+        registry: HostRegistry,
+    ) -> None:
+        self.client = client
+        self.functions = functions
+        self.database = database
+        self.settings = settings
+        self.registry = registry
+
+    def investigate(self, _host: str | None, question: str) -> str:
+        start = time.monotonic()
+        tool_calls = 0
+        llm_calls = 0
         cancellation = current_cancellation.get()
-        evidence: list[str] = []
+
+        enabled_hosts = [
+            {
+                "name": host.name,
+                "aliases": host.aliases,
+                "vast_id": host.vast_id,
+            }
+            for host in self.registry.hosts.values()
+            if host.enabled
+        ]
         inputs: list[dict[str, object]] = [{
             "type": "text",
-            "text": f"Target logical host: {host}\nInvestigation request: {question}",
+            "text": (
+                "Configured hosts:\n"
+                + json.dumps(enabled_hosts, ensure_ascii=False)
+                + "\n\nHuman request:\n"
+                + question
+            ),
         }]
-        while (llm_calls < self.settings.max_llm_calls
-               and llm_calls < self.settings.max_agent_steps
-               and time.monotonic() - start < self.settings.agent_wall_time_seconds):
+
+        while (
+            llm_calls < self.settings.max_llm_calls
+            and llm_calls < self.settings.max_agent_steps
+            and time.monotonic() - start < self.settings.agent_wall_time_seconds
+        ):
             if cancellation and cancellation.cancelled:
-                return InvestigationResult(summary="調査はキャンセルされました。", recommended_action="NONE")
+                return "調査はキャンセルされました。"
+
             try:
                 response = self.client.interact(
-                    model=self.settings.model, inputs=inputs, system_instruction=SYSTEM_PROMPT,
+                    model=self.settings.model,
+                    inputs=inputs,
+                    system_instruction=SYSTEM_PROMPT,
                     tools=FUNCTION_DECLARATIONS,
                     thinking_level=self.settings.investigate_thinking_level,
                     store=self.settings.store_interactions,
                 )
-            except Exception:  # API boundary; deliberately do not expose credential-bearing details
-                return InvestigationResult(summary="Gemini unavailable. 取得済みObservationのみ表示します。",
-                                           findings=evidence, missing_evidence=["Gemini analysis"])
+            except Exception:
+                return "Geminiとの通信に失敗しました。"
+
             llm_calls += 1
-            self.database.save_token_usage("investigate", self.settings.model,
-                                           self.settings.investigate_thinking_level, response.usage)
-            # With store=false, every model-generated step (including thought steps) must
-            # be replayed verbatim into the next stateless interaction.
+            self.database.save_token_usage(
+                "simple-v2",
+                self.settings.model,
+                self.settings.investigate_thinking_level,
+                response.usage,
+            )
             inputs.extend(response.steps)
+
             if response.output_text and not response.function_calls:
-                try:
-                    return InvestigationResult.model_validate_json(response.output_text)
-                except (ValidationError, ValueError):
-                    return InvestigationResult(
-                        summary="Geminiの構造化結論を検証できませんでした。",
-                        findings=evidence,
-                        recommended_action="NONE",
-                        missing_evidence=["valid structured final response"],
-                    )
+                return response.output_text.strip()
+
             if not response.function_calls:
                 break
+
             for call in response.function_calls:
                 if cancellation and cancellation.cancelled:
-                    return InvestigationResult(summary="調査はキャンセルされました。", recommended_action="NONE")
+                    return "調査はキャンセルされました。"
                 if tool_calls >= self.settings.max_tool_calls:
-                    return InvestigationResult(
-                        summary="調査上限に達しました。現在得られている証拠を返します。",
-                        findings=evidence,
-                        missing_evidence=["未処理の追加確認"],
-                    )
-                output = self.functions.execute(call.name, call.arguments, host)
-                tool_calls += 1; evidence.append(f"{call.name}: {output}")
+                    inputs.append({
+                        "type": "text",
+                        "text": "READ上限に達しました。現在の証拠だけで回答してください。",
+                    })
+                    break
+
+                output = self.functions.execute(
+                    call.name,
+                    call.arguments,
+                    cancellation,
+                )
+                tool_calls += 1
                 inputs.append({
-                    "type": "function_result", "name": call.name, "call_id": call.call_id,
-                    "result": [{"type": "text", "text": json.dumps(output, ensure_ascii=False)}],
+                    "type": "function_result",
+                    "name": call.name,
+                    "call_id": call.call_id,
+                    "result": [{
+                        "type": "text",
+                        "text": json.dumps(output, ensure_ascii=False, default=str),
+                    }],
                 })
-        return InvestigationResult(
-            summary="調査上限に達しました。現在得られている証拠を返します。",
-            findings=evidence, missing_evidence=["追加で必要な確認は次回調査で実施してください"],
-        )
+
+        return "調査上限に達しました。得られた証拠だけでは回答を確定できませんでした。"
