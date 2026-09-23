@@ -69,13 +69,9 @@ def test_gemini_drives_read_argv_and_receives_evidence(tmp_path, host):
     ["sh", "-c", "nvidia-smi"],
     ["bash", "-c", "id"],
     ["echo", "x", "|", "cat"],
-    ["systemctl", "restart", "vastai"],
     ["sudo", "systemctl", "status", "vastai"],
-    ["sudo", "-n", "systemctl", "restart", "vastai"],
-    ["cat", "/home/user/.ssh/id_ed25519"],
-    ["nvidia-smi", "--gpu-reset", "-i", "0"],
 ])
-def test_read_boundary_rejects_only_hard_boundary_violations(argv):
+def test_argv_boundary_rejects_only_structural_violations(argv):
     with pytest.raises(ArgvRejected):
         validate_read_argv(argv)
 
@@ -87,8 +83,11 @@ def test_read_boundary_rejects_only_hard_boundary_violations(argv):
     ["sudo", "-n", "journalctl", "-k", "-b", "--no-pager"],
     ["ps", "-eo", "pid,stat,comm"],
     ["lspci", "-Dnnk"],
+    ["sudo", "-n", "systemctl", "restart", "vastai"],
+    ["sudo", "-n", "nvidia-smi", "--gpu-reset", "-i", "0"],
+    ["cat", "/home/user/.ssh/id_ed25519"],
 ])
-def test_read_boundary_allows_normal_read_argv(argv):
+def test_read_boundary_does_not_judge_command_meaning(argv):
     assert validate_read_argv(argv).argv == tuple(argv)
 
 
@@ -251,3 +250,36 @@ def test_write_proposal_is_stored_but_never_executed(tmp_path, host):
     result = next(item for item in second_inputs if item.get("type") == "function_result")
     payload = json.loads(result["result"][0]["text"])
     assert payload["proposal_id"] == 1
+
+
+
+def test_history_keeps_only_recent_tool_rounds_and_compact_ledger(tmp_path, host):
+    def call(call_id, argv):
+        return AgentResponse(steps=[{
+            "type": "function_call",
+            "name": "read_host",
+            "arguments": {"host": host.name, "argv": argv},
+            "id": call_id,
+        }])
+
+    agent, client, _, _, _ = setup_agent(
+        tmp_path,
+        host,
+        [
+            call("r1", ["nvidia-smi"]),
+            call("r2", ["lspci", "-Dnnk"]),
+            call("r3", ["systemctl", "status", "vastai"]),
+            AgentResponse(output_text="done"),
+        ],
+        max_replayed_tool_rounds=2,
+    )
+
+    assert agent.investigate(None, "順番に確認して") == "done"
+
+    final_inputs = client.requests[3]["inputs"]
+    serialized = json.dumps(final_inputs, ensure_ascii=False)
+    assert '"id": "r1"' not in serialized
+    assert '"id": "r2"' in serialized
+    assert '"id": "r3"' in serialized
+    assert "Operation ledger" in serialized
+    assert "nvidia-smi" in serialized
