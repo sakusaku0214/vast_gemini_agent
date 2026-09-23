@@ -283,3 +283,39 @@ def test_history_keeps_only_recent_tool_rounds_and_compact_ledger(tmp_path, host
     assert '"id": "r3"' in serialized
     assert "Operation ledger" in serialized
     assert "nvidia-smi" in serialized
+
+
+
+def test_budget_exhaustion_gets_tool_free_final_synthesis(tmp_path, host_registry):
+    from vast_agent.agent.gemini import ScriptedGeminiClient
+    from vast_agent.agent.models import AgentResponse
+    from vast_agent.agent.orchestrator import InvestigationAgent
+    from vast_agent.approval import ProposalStore
+    from vast_agent.config import GeminiSettings
+    from vast_agent.storage.database import Database
+
+    class Remote:
+        def execute(self, host, command, timeout, cancellation=None):
+            from vast_agent.models.tool_result import ToolResult
+            return ToolResult(success=True, exit_code=0, stdout="evidence", duration_ms=1)
+
+    db = Database(tmp_path / "db")
+    db.migrate()
+    settings = GeminiSettings(max_agent_steps=1, max_llm_calls=1, max_tool_calls=2)
+    client = ScriptedGeminiClient([
+        AgentResponse(steps=[{
+            "type": "function_call",
+            "name": "read_host",
+            "arguments": {"host": next(iter(host_registry.hosts)), "argv": ["lspci", "-k"]},
+            "id": "call-1",
+        }]),
+        AgentResponse(output_text="取得済み証拠から回答します。"),
+    ])
+    functions = FunctionExecutor(host_registry, Remote(), ProposalStore(db))
+    agent = InvestigationAgent(client, functions, db, settings, host_registry)
+
+    answer = agent.investigate(None, "もう一台はVM？")
+
+    assert answer == "取得済み証拠から回答します。"
+    assert client.calls == 2
+    assert client.requests[-1]["tools"] == []
