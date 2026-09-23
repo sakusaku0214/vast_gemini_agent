@@ -12,7 +12,7 @@ from vast_agent.storage.database import Database
 
 
 class InvestigationAgent:
-    """Small Gemini loop: think -> READ argv -> evidence -> think."""
+    """Small Gemini loop: think -> READ/propose WRITE -> evidence -> think."""
 
     def __init__(
         self,
@@ -28,7 +28,14 @@ class InvestigationAgent:
         self.settings = settings
         self.registry = registry
 
-    def investigate(\n        self, _host: str | None, question: str,\n        owner_id: str = "cli", channel_id: str = "cli",\n    ) -> str:\n        start = time.monotonic()
+    def investigate(
+        self,
+        _host: str | None,
+        question: str,
+        owner_id: str = "cli",
+        channel_id: str = "cli",
+    ) -> str:
+        start = time.monotonic()
         tool_calls = 0
         llm_calls = 0
         cancellation = current_cancellation.get()
@@ -93,7 +100,7 @@ class InvestigationAgent:
                 if tool_calls >= self.settings.max_tool_calls:
                     inputs.append({
                         "type": "text",
-                        "text": "READ上限に達しました。現在の証拠だけで回答してください。",
+                        "text": "操作上限に達しました。現在の証拠だけで回答してください。",
                     })
                     break
 
@@ -115,4 +122,4 @@ class InvestigationAgent:
                     }],
                 })
 
-        return "調査上限に達しました。得られた証拠だけでは回答を確定できませんでした。"
+        return "操作上限に達しました。得られた証拠だけでは回答を確定できませんでした。"
