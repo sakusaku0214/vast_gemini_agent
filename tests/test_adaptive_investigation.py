@@ -396,6 +396,41 @@ def test_cli_evidence_strips_ansi_and_deduplicates_display(tmp_path, host):
     assert result._display_evidence.count("42  rented") == 1
 
 
+def test_display_evidence_selects_primary_cli_not_supporting_or_alternate_reads(host):
+    session = InvestigationSession(
+        target_host=host.name, goal="widgetctl list nodes の結果を共有して",
+    )
+    reads = (
+        ("query_executable", [], "/opt/tools/widgetctl", "executable discovery"),
+        ("query_cli_help", ["--help"], "HELP giant usage", "syntax discovery"),
+        ("run_readonly_argv", ["list", "nodes", "--json"],
+         '[{"node": "alpha", "state": "ready"}]', "parser fallback"),
+        ("run_readonly_argv", ["list", "nodes"], "NODE   STATE\nalpha  ready", "requested data"),
+    )
+    for source, argv, stdout, reason in reads:
+        executable = "widgetctl"
+        payload = {
+            "status": "completed", "executable": executable, "argv": argv, "stdout": stdout,
+        }
+        if source == "query_executable":
+            payload = {"status": "available", "path": stdout}
+        output = {"untrusted_evidence": payload}
+        record = compact_evidence(source, output, 1800)
+        if source == "query_executable":
+            record = record.model_copy(update={"relevant_excerpt": stdout})
+        assert session.add(source, {
+            "executable": executable, "argv": argv, "reason": reason,
+        }, record)
+
+    result = InvestigationResult(summary="1 machine is rented")
+    InvestigationAgent._attach_validated_grounding(result, session)
+
+    assert result._display_evidence == "NODE   STATE\nalpha  ready"
+    assert "HELP" not in result._display_evidence
+    assert '"node"' not in result._display_evidence
+    assert "/opt/tools" not in result._display_evidence
+
+
 def test_session_bounds_cache_and_evidence_compaction():
     session = InvestigationSession(
         target_host="host", goal="goal", max_tool_calls=1, max_rounds=1,

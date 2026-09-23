@@ -350,9 +350,11 @@ class AgentService:
             )
             state.investigation_context["pending_write_goal"] = text[:500]
             self.conversations.save(owner, channel, state)
+            conclusion = str(investigation.summary).strip()
+            detail = f"\n調査結果: {conclusion}" if conclusion else ""
             return ServiceReply(
                 "operation classification or target grounding is uncertain; "
-                "変更対象または値が曖昧なため確認が必要です。",
+                f"変更対象または値が曖昧なため確認が必要です。{detail}",
             )
         proposal = await asyncio.to_thread(self.actions.propose_operation, plan, str(owner))
         state.last_host = write_host.name

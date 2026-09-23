@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
 
+from vast_agent.agent.evidence import strip_ansi
 from vast_agent.execution.base import Executor, redact
 from vast_agent.models.host import Host
 
@@ -185,7 +186,9 @@ def _failure_evidence(exit_code: int | None, stderr: str, timed_out: bool) -> tu
 
 def sanitize_output(value: str, secrets: Sequence[str] = (), *, max_bytes: int = 16_384,
                     max_lines: int = 200) -> str:
-    cleaned = _CONTROL.sub("", redact(value, secrets))
+    # Strip whole escape sequences while ESC is still present.  Removing generic
+    # controls first leaves visible fragments such as ``[48;5;240m`` behind.
+    cleaned = _CONTROL.sub("", strip_ansi(redact(value, secrets)))
     cleaned = "\n".join(cleaned.splitlines()[:max_lines])
     data = cleaned.encode("utf-8", errors="replace")
     if len(data) > max_bytes:
