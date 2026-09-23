@@ -18,7 +18,9 @@ class SSHExecutor:
 
     def execute(self, host: Host, command: Sequence[str], timeout: int,
                 cancellation: CancellationToken | None = None) -> ToolResult:
-        # The remote command consists only of tokens owned by registered tools.
+        # OpenSSH transports the remote command as text. Serialize validated argv
+        # so each token remains literal; callers never supply a shell program/string.
+        remote_command = shlex.join(command)
         args = [
             self.ssh_executable,
             "-p", str(host.ssh_port),
@@ -29,7 +31,7 @@ class SSHExecutor:
             "-o", f"UserKnownHostsFile={self.known_hosts}",
             "-o", "StrictHostKeyChecking=yes",
             "--", f"{host.ssh_user}@{host.address}",
-            *command,
+            remote_command,
         ]
         started = time.monotonic()
         try:
