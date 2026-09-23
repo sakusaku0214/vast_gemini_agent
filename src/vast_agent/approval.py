@@ -51,6 +51,9 @@ class ProposalStore:
             for row in self.database.pending_proposals(owner_id, channel_id)
         ]
 
+    def reject(self, proposal_id: int, owner_id: str, channel_id: str) -> bool:
+        return self.database.reject_proposal(proposal_id, owner_id, channel_id)
+
     def claim(self, proposal_id: int, owner_id: str, channel_id: str) -> Proposal | None:
         row = self.database.claim_proposal(proposal_id, owner_id, channel_id)
         return self._from_row(row) if row else None
