@@ -14,7 +14,7 @@ from vast_agent.discord_app.formatting import split_messages
 from vast_agent.discord_app.gateway import DiscordGateway
 from vast_agent.execution.ssh import SSHExecutor
 from vast_agent.jobs import CancellationToken, JobManager, JobStatus
-from vast_agent.jobs.locks import LockClass
+from vast_agent.jobs.locks import LockAcquisitionCancelled, LockClass
 from vast_agent.logging_utils import SecretRedactingFormatter
 from vast_agent.models.host import Capabilities, Host
 from vast_agent.models.tool_result import ErrorCode
@@ -125,6 +125,64 @@ def test_host_coordination_serializes_heavy_but_not_different_hosts(tmp_path):
     for thread in threads: thread.start()
     for thread in threads: thread.join()
     assert peak == 2
+
+
+def test_cancelled_heavy_read_waiter_exits_while_holder_remains_active(tmp_path):
+    """A cancelled asyncio worker must not survive loop shutdown blocked on a host lock."""
+    locks = JobManager(Database(tmp_path / "db")).locks
+    holder_ready = threading.Event()
+    release_holder = threading.Event()
+    waiter_started = threading.Event()
+    token = CancellationToken()
+    outcome = {}
+
+    def hold_lock():
+        with locks.acquire("same", LockClass.HEAVY_READ):
+            holder_ready.set()
+            release_holder.wait()
+
+    def wait_for_lock():
+        waiter_started.set()
+        try:
+            with locks.acquire("same", LockClass.HEAVY_READ, token):
+                outcome["acquired"] = True
+        except LockAcquisitionCancelled:
+            outcome["cancelled"] = True
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert holder_ready.wait(1)
+    async def cancel_queued_worker():
+        waiter = asyncio.create_task(asyncio.to_thread(wait_for_lock))
+        while not waiter_started.is_set():
+            await asyncio.sleep(0)
+        token.cancel()
+        await asyncio.wait_for(waiter, timeout=1)
+    try:
+        asyncio.run(cancel_queued_worker())
+        assert outcome == {"cancelled": True}
+        assert holder.is_alive(), "holder should still own the host lock"
+    finally:
+        release_holder.set()
+        holder.join(1)
+    assert not holder.is_alive()
+
+
+def test_late_cancellation_callback_runs_outside_token_mutex():
+    """A fleet worker starting after cancellation must not deadlock during registration."""
+    token = CancellationToken()
+    assert token.cancel()
+    completed = threading.Event()
+
+    def callback():
+        token.unregister(callback)
+        completed.set()
+
+    worker = threading.Thread(target=lambda: token.register(callback))
+    worker.start()
+    worker.join(1)
+    assert not worker.is_alive()
+    assert completed.is_set()
 
 
 def test_ssh_cancellation_terminates_real_child(tmp_path, monkeypatch, host):
@@ -241,24 +299,40 @@ def test_fleet_and_investigation_same_host_do_not_overlap(tmp_path):
                 capabilities=Capabilities(nvidia=True))
     service, inspection = _service(tmp_path, object(), [host])
     active = 0; peak = 0
+    fleet_entered = threading.Event()
+    release_fleet = threading.Event()
+    agent_entered = threading.Event()
     original = inspection.inspect_and_record
-    def enter_and_wait(callback):
+    def enter_and_wait(callback, *, block=False):
         nonlocal active, peak
         active += 1; peak = max(peak, active)
-        try: time.sleep(.06); return callback()
+        try:
+            if block:
+                fleet_entered.set()
+                release_fleet.wait()
+            return callback()
         finally: active -= 1
-    def inspect(*args): return enter_and_wait(lambda: original(*args))
+    def inspect(*args): return enter_and_wait(lambda: original(*args), block=True)
     inspection.inspect_and_record = inspect
     class Agent:
         def investigate(self, *args):
+            agent_entered.set()
             return enter_and_wait(lambda: InvestigationResult(summary="ok"))
     service.agent = Agent()
     async def run():
-        await asyncio.gather(
+        fleet = asyncio.create_task(service.handle_question("全台GPU状態見て", 1, 2))
+        assert await asyncio.to_thread(fleet_entered.wait, 1)
+        investigation = asyncio.create_task(
             service.handle_question("torrentの原因調べて", 1, 2),
-            service.handle_question("全台GPU状態見て", 1, 2),
         )
-    asyncio.run(run())
+        await asyncio.sleep(0)
+        assert not agent_entered.is_set()
+        release_fleet.set()
+        await asyncio.wait_for(asyncio.gather(fleet, investigation), timeout=2)
+    try:
+        asyncio.run(run())
+    finally:
+        release_fleet.set()
     assert peak == 1
 
 
@@ -297,3 +371,21 @@ def test_observation_severity_is_not_green_for_failures():
     assert AgentService._format_observation(observation(ssh_ok=False)).startswith("🔴")
     assert not AgentService._format_observation(observation(nvml_ok=False)).startswith("🟢")
     assert not AgentService._format_observation(observation(signatures=("NVML_UNAVAILABLE",))).startswith("🟢")
+
+
+def test_gpu_formatter_lists_every_detected_device():
+    devices = [
+        SimpleNamespace(index=0, model="RTX 3090", temperature_c=61,
+                        utilization_percent=98, power_draw_w=300.5,
+                        vram_used_mb=20000, vram_total_mb=24576),
+        SimpleNamespace(index=1, model="RTX 3090", temperature_c=52,
+                        utilization_percent=4, power_draw_w=91.0,
+                        vram_used_mb=1024, vram_total_mb=24576),
+    ]
+    observation = SimpleNamespace(
+        host="garage-h12ssl-nt", ssh_ok=True, signatures=[],
+        gpu=SimpleNamespace(nvml_ok=True, devices=devices),
+    )
+    rendered = AgentService._format_observation(observation, "gpu")
+    assert "GPU0 RTX 3090" in rendered and "GPU1 RTX 3090" in rendered
+    assert "300.5W" in rendered and "20000/24576 MiB" in rendered

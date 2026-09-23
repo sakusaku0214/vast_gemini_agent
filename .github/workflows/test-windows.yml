@@ -27,6 +27,8 @@ jobs:
             (Resolve-Path .\scripts\install.ps1), [ref]$null, [ref]$errors)
           if ($errors.Count) { $errors | Format-List; exit 1 }
       - run: .\.venv\Scripts\python.exe -m ruff check .
-      - run: .\.venv\Scripts\python.exe -m pytest
+      - name: Pytest (verbose with deadlock timeout)
+        timeout-minutes: 10
+        run: .\.venv\Scripts\python.exe -m pytest -vv --timeout=60 --timeout-method=thread
       - run: .\.venv\Scripts\python.exe -m vast_agent --runtime "$env:RUNNER_TEMP\vast-agent" install
       - run: .\.venv\Scripts\python.exe -m vast_agent --runtime "$env:RUNNER_TEMP\vast-agent" doctor

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from vast_agent.agent.models import IntentDecision, Route
 from vast_agent.config import HostRegistry
 
@@ -33,7 +35,15 @@ def route_intent(text: str, registry: HostRegistry) -> IntentDecision:
     if write_mentioned or (host is not None and any(word in folded for word in AGENT_WORDS)):
         return IntentDecision(route=Route.AGENT, host=host.name if host else None, action="investigate")
     for phrase, scope in SCOPES.items():
-        if phrase in folded:
+        # A fast path must be unambiguously a request to read.  Extra language such as
+        # ``docker状態直して`` belongs to the Agent even though it contains a scope phrase.
+        suffix = folded.split(phrase, 1)[1] if phrase in folded else None
+        read_ending = suffix is not None and any(
+            marker in suffix for marker in ("見て", "確認", "状況", "どう", "?", "？")
+        )
+        if suffix is not None and (
+            re.fullmatch(r"\s*[?？。!！\s]*", suffix) or read_ending
+        ) and not any(word in suffix for word in WRITE_WORDS):
             return IntentDecision(route=Route.DETERMINISTIC, host=host.name if host else None,
                                   action="inspect", scope=scope)
     # Any non-write question with an explicit host is a read-only investigation.

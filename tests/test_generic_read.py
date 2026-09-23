@@ -77,3 +77,23 @@ def test_validator_is_an_execution_boundary():
     result = run_validated_read(remote, host(), "vastai", ["show", "machines"])
     assert result["status"] == "completed"
     assert remote.calls == [("x570", ("vastai", "show", "machines"), 15)]
+
+
+@pytest.mark.parametrize(("executable", "argv", "expected"), [
+    ("last", ["-x", "reboot", "shutdown"], ReadClassification.READ),
+    ("journalctl", ["-b", "-1", "-n", "30", "--no-pager"], ReadClassification.READ),
+    ("journalctl", ["--vacuum-time=1d"], ReadClassification.MUTATION),
+    ("uptime", [], ReadClassification.READ),
+    ("ps", ["-ef"], ReadClassification.READ),
+    ("pgrep", ["-a", "vastai"], ReadClassification.READ),
+    ("lspci", ["-nnk"], ReadClassification.READ),
+    ("lsblk", ["-J"], ReadClassification.READ),
+    ("uname", ["-r"], ReadClassification.READ),
+    ("docker", ["ps", "-a"], ReadClassification.READ),
+    ("virsh", ["list", "--all"], ReadClassification.READ),
+    ("nvidia-smi", ["-q"], ReadClassification.READ),
+    ("systemctl", ["restart", "vastai"], ReadClassification.MUTATION),
+    ("nvidia-smi", ["--gpu-reset"], ReadClassification.MUTATION),
+])
+def test_executable_aware_diagnostic_classification(executable, argv, expected):
+    assert validate_read_argv(executable, argv).classification == expected

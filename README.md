@@ -1,6 +1,9 @@
 # Vast Gemini Agent
 
-Vast Gemini Agent は、Windows 11 上の Discord / Gemini フロントエンドから、LAN 内の Vast.ai Ubuntu ホストを自然言語で調査・運用する **approval-gated operations agent** です。モデルには調査と計画の柔軟性を与え、状態変更の authority は OWNER の明示承認に残します。
+Vast Gemini Agent は、Windows 11 上で動作し、Discord から LAN 内の Vast.ai Ubuntu
+ホストを調査・運用するエージェントです。ユーザーは「何を知りたいか」「どうしたいか」を普段の
+言葉で伝えます。Agent は安全な READ 手段を選んで調べ、変更が必要な場合だけ OWNER に承認を
+求めます。
 
 ## What it can do
 
@@ -13,9 +16,7 @@ Vast Gemini Agent は、Windows 11 上の Discord / Gemini フロントエンド
 - typed action で表現できない変更の structured Operation Plan
 - OWNER approval、fresh preflight、exact execution、post-action verification
 
-## Core philosophy
-
-**Flexible before execution. Strict at execution.**
+## 基本方針
 
 **Think freely. Execute only with approval. — 「考えるのは自由、実行は承認制」**
 
@@ -23,15 +24,16 @@ Vast Gemini Agent は、Windows 11 上の Discord / Gemini フロントエンド
 - **WRITE:** Agent は自由に調査・推論して exact plan を作れますが、実行には OWNER の Approve が必須です。
 - **Hard safety floor:** 破壊的または security-sensitive な少数の操作は、承認されても実行しません。
 
-Model freedom before execution. Human authority at execution.
+安全性は「理解できる言葉を制限する」ことでなく、実行境界で保証します。Agent が自由に調査・
+比較・計画しても、承認済みの正確な操作以外は実行できません。
 
-## Architecture
+## 処理の流れ
 
 ```text
 Discord / CLI
-  → Intent + compact conversation context
-  → Gemini Planner
-  → READ Discovery / Investigation
+  → application-owned host / immutable host-set resolution
+  → adaptive READ Discovery / Investigation Agent
+  → answer or explicit mutation conclusion
   → Operation Planner
   → structured Proposal
   → OWNER Approve / Reject
@@ -41,8 +43,8 @@ Discord / CLI
   → Observation / Audit Log
 ```
 
-- **InvestigationAgent** は request-local evidence を集める read-only phase です。
-- **Action Interpreter** は自然言語を既存 typed action に ground します。
+- **InvestigationAgent** は目的を理解し、必要な READ evidence を集めます。
+- **Router** は明白で安全な READ の latency optimization にすぎず、理解の gate ではありません。
 - **Operation Planner** は executable、argv、sudo、理由、効果、検証を構造化します。
 - **Policy Engine** は deployment policy、operation impact、hard floor を code 側で判定します。
 - **Approval Coordinator** は OWNER、TTL、single-use、atomic transition を管理します。
@@ -70,9 +72,13 @@ Operation Plan は `requires_sudo: true/false` と実際の executable / argv �
 
 password prompt や password の保存・入力は扱いません。sudoers は必要な executable と引数に最小化してください。`NOPASSWD: ALL` は推奨しません。
 
-## Conversation context
+## 会話の引き継ぎ
 
-READ follow-up は、直前に一意の host が確立されていれば last host を継承できます。WRITE も、直前の一ホスト調査への明確な follow-up で confidence が HIGH、競合 host や fleet 解釈がなく、current message が具体的 target を示す場合に限って host を継承できます。
+通常の READ は一意の host context を確立します。調査の目的、結論、重要な findings、未解決の
+evidence もサイズを制限して保存します（生ログは保存しません）。以後の `二枚あるでしょう？`、
+`NVTOP入ってる？`、`nvidia-smi見せて`、`GPU0ちょっと抑えて` は intent keyword を要求せず、
+`つまり？`、`ログを見れば理由まで分からない？` も直前の証拠を引き継いで同じ host の Agent に
+渡ります。fleet context は単一 host の WRITE authority にはなりません。
 
 継承した host は Proposal に `Host source: conversation context` として明示します。GPU index や操作 parameter を context から発明することはありません。曖昧な場合は確認します。
 
@@ -101,7 +107,20 @@ CLI 名の巨大な permission catalog はありません。installed executable
 - `operations.allowed_actions` は既存 typed action の execution deployment policy です。
 - `operations.generic_operations_enabled` は generic mutation execution の独立 policy です。
 
-`SCOPES` / `WRITE_WORDS` / `AGENT_WORDS` は明白な要求を低 latency で処理する fast path にすぎません。該当しない host-context message は tool-free semantic classifier が READ / WRITE / ADVICE / GENERAL / UNCERTAIN に分類します。この分類は host、target、parameter、argv、permission を選べず、WRITE の場合も investigation と grounding を経て Proposal を作るだけです。
+`SCOPES` / `WRITE_WORDS` / `AGENT_WORDS` は明白な要求を低 latency で処理する fast path にすぎません。
+該当しない host-context message もそのまま Investigation Agent に届きます。mandatory semantic
+classifier や `UNCERTAIN` refusal gate はありません。Agent は READ evidence を集めた同じ reasoning
+loop で answer / advice / mutation request を区別し、mutation のときだけ planner に引き渡します。
+
+## Fleet は capability ではなく scope
+
+Fleet は capability ではなく、application が固定する immutable host set です。`全台` は enabled
+host 全体、複数の alias はその host だけを選び、Gemini が address を追加することはありません。
+同じ Investigation Agent と validated READ を host ごとに `max_parallel_hosts` 以下で実行するため、
+uptime、kernel version、Docker container 数、`nvidia-smi` などを専用 fleet handler なしで比較できます。
+一台が失敗しても、ほかの結果は捨てません。比較、filter、ranking、sum/average/min/max は構造化した
+結果から合成します。昨日の vnStat RX/TX/total のように数値の正確さが重要なものは application 側で
+sort する高速経路もあります。fleet mutation と batch approval は提供しません。
 
 ## Approval flow
 
@@ -205,6 +224,27 @@ runtime:    %LOCALAPPDATA%\VastGeminiAgent
 安全な migration のため、generic approved operation execution は `operations.enabled` と
 `operations.generic_operations_enabled` の両方を明示的に有効化するまで default deny です。
 Proposal の理解や表示と execution permission は別です。
+
+### Secret の優先順位と Bot の共存
+
+Vast Gemini Agent は、同じ Windows ユーザーで動く旧 Bot のグローバル環境変数に runtime secret を
+上書きされません。次の順で、最初に見つかった値を使います。
+
+1. Agent 専用環境変数 `VAST_AGENT_*`（明示的な一時上書き）
+2. `%LOCALAPPDATA%\VastGeminiAgent\secrets\secrets.env`
+3. 従来の汎用環境変数（互換用 fallback）
+
+| 用途 | Agent 専用（最優先） | secrets.env / 従来変数名 |
+|---|---|---|
+| Discord Bot token | `VAST_AGENT_DISCORD_BOT_TOKEN` | `DISCORD_BOT_TOKEN` |
+| Discord channel | `VAST_AGENT_DISCORD_CHANNEL_ID` | `DISCORD_CHANNEL_ID` |
+| Discord OWNER | `VAST_AGENT_DISCORD_OWNER_USER_ID` | `DISCORD_OWNER_USER_ID` |
+| Gemini API key | `VAST_AGENT_GEMINI_API_KEY` | `GEMINI_API_KEY` |
+| Search API key | `VAST_AGENT_SEARCH_API_KEY` | `SEARCH_API_KEY` |
+
+たとえば旧 Bot の `DISCORD_BOT_TOKEN` がユーザー環境変数に残っていても、Vast Gemini Agent の
+`secrets.env` に書いた token が優先されます。環境変数を削除する必要はありません。Agent 専用変数も
+runtime file もない既存環境では、従来の変数をそのまま利用できます。secret の値は log に出しません。
 
 ## Discord examples
 

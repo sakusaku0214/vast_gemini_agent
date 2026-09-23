@@ -18,11 +18,14 @@ class CancellationToken:
         return self._event.is_set()
 
     def register(self, callback) -> None:
+        call_now = False
         with self._lock:
             if self.cancelled:
-                callback()
+                call_now = True
             else:
                 self._callbacks.append(callback)
+        if call_now:
+            callback()
 
     def unregister(self, callback) -> None:
         with self._lock:

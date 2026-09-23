@@ -22,6 +22,11 @@ def _integer(value: str) -> int | None:
     except ValueError: return None
 
 
+def _float(value: str) -> float | None:
+    try: return float(value.strip())
+    except ValueError: return None
+
+
 def parse_gpu(result: ToolResult) -> tuple[bool, str | None, list[GpuDevice]]:
     if not result.success:
         return False, (result.stderr or "nvidia-smi failed").strip()[:500], []
@@ -35,6 +40,7 @@ def parse_gpu(result: ToolResult) -> tuple[bool, str | None, list[GpuDevice]]:
             index=index, uuid=fields[1], model=fields[2], temperature_c=_integer(fields[3]),
             utilization_percent=_integer(fields[4]), vram_used_mb=_integer(fields[5]),
             vram_total_mb=_integer(fields[6]), power_state=fields[7], pci_bus=fields[8],
+            power_draw_w=_float(fields[9]) if len(fields) > 9 else None,
         ))
     return True, None, devices
 

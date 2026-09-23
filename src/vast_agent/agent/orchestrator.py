@@ -5,31 +5,19 @@ import logging
 import re
 import time
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 from vast_agent.actions.capability_bridge import ground_capability_gap
-from vast_agent.actions.grounding import action_target_is_grounded
-from vast_agent.actions.models import (
-    ActionParameters,
-    ActionRequest,
-)
 from vast_agent.actions.operation_plan import OperationPlan
-from vast_agent.actions.registry import ActionRegistry
 from vast_agent.agent.evidence import compact_evidence
 from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import GeminiClient
 from vast_agent.agent.host_read import FUNCTION_DECLARATIONS, HOST_READ_CAPABILITIES
 from vast_agent.agent.investigation_session import InvestigationSession, StopReason
-from vast_agent.agent.models import (
-    ActionIntentCandidate,
-    HostOperationIntentCandidate,
-    InvestigationResult,
-)
+from vast_agent.agent.models import InvestigationResult
 from vast_agent.agent.prompts import (
-    ACTION_INTENT_PROMPT,
     FINAL_SYNTHESIS_PROMPT,
     GENERAL_SYSTEM_PROMPT,
-    HOST_OPERATION_INTENT_PROMPT,
     OPERATION_PLANNER_PROMPT,
     SYSTEM_PROMPT,
 )
@@ -101,60 +89,6 @@ class InvestigationAgent:
         self.client = client; self.functions = functions; self.database = database; self.settings = settings
         self.general_tools = general_tools
 
-    def interpret_action(self, host: str, message: str) -> ActionRequest | None:
-        """Use Gemini for NLU only, then enforce code-owned typing and lexical grounding."""
-        try:
-            response = self.client.interact(
-                model=self.settings.model,
-                inputs=[_user_input(f"Explicit host: {host}\nCurrent user message: {message}")],
-                system_instruction=ACTION_INTENT_PROMPT,
-                tools=[],
-                thinking_level=self.settings.default_thinking_level,
-                store=self.settings.store_interactions,
-            )
-        except Exception:
-            logger.exception("Gemini action interpretation failed")
-            return None
-        self.database.save_token_usage(
-            "action_interpretation", self.settings.model,
-            self.settings.default_thinking_level, response.usage,
-        )
-        if response.function_calls or not response.output_text:
-            return None
-        try:
-            candidate = ActionIntentCandidate.model_validate_json(response.output_text)
-            if candidate.action_type is None:
-                return None
-            parameters = TypeAdapter(ActionParameters).validate_python(candidate.parameters)
-            request = ActionRequest(
-                host=host, action_type=candidate.action_type, parameters=parameters,
-            )
-            ActionRegistry().validate_consistency(request)
-        except (ValidationError, ValueError):
-            return None
-        return request if action_target_is_grounded(request, message) else None
-
-    def classify_host_intent(self, host: str, message: str) -> str:
-        """Semantically route a fixed-host message without tools, targets, or execution rights."""
-        try:
-            response = self.client.interact(
-                model=self.settings.model,
-                inputs=[_user_input(f"Fixed host (cannot be changed): {host}\nMessage: {message}")],
-                system_instruction=HOST_OPERATION_INTENT_PROMPT, tools=[],
-                thinking_level=self.settings.default_thinking_level,
-                store=self.settings.store_interactions,
-            )
-            self.database.save_token_usage(
-                "host_intent", self.settings.model, self.settings.default_thinking_level,
-                response.usage,
-            )
-            if response.function_calls or not response.output_text:
-                return "UNCERTAIN"
-            return HostOperationIntentCandidate.model_validate_json(response.output_text).intent
-        except (ValidationError, ValueError):
-            logger.warning("Host operation intent validation failed")
-            return "UNCERTAIN"
-
     def plan_operation(self, host: str, host_source: str, message: str,
                        investigation: InvestigationResult) -> OperationPlan | None:
         """Plan one inert generic operation; this method has no execution tools or authority."""
@@ -189,10 +123,53 @@ class InvestigationAgent:
                 return None
         elif plan.verification_target:
             target = plan.verification_target.casefold()
-            evidence = investigation.model_dump_json().casefold()
+            evidence = investigation._validated_evidence.casefold()
             if target not in message.casefold() and target not in evidence:
                 return None
+        if not self._generic_target_is_grounded(plan, message, investigation):
+            return None
         return plan
+
+    @staticmethod
+    def _generic_target_is_grounded(
+        plan: OperationPlan, message: str, investigation: InvestigationResult,
+    ) -> bool:
+        """Reject mutable identifiers/values not traceable to request or fresh evidence."""
+        corpus = f"{message}\n{investigation._validated_evidence}".casefold()
+        target_tokens = re.findall(r"[a-z][a-z0-9_.@-]{2,}|\d+(?:\.\d+)?", plan.target.casefold())
+        ignored = {"gpu", "service", "container", "package", "target", "device"}
+        if any(token not in ignored and token not in corpus for token in target_tokens):
+            return False
+        important_values = {
+            token for argument in plan.argv
+            for token in re.findall(r"\d+(?:\.\d+)?", argument)
+        }
+        grounded_values = (
+            set(re.findall(r"\d+(?:\.\d+)?", message))
+            | set(investigation._validated_numeric_values)
+        )
+        # command_source is model-authored metadata, not grounding evidence. A numeric argv value
+        # must occur exactly in the current request or validated fresh InvestigationResult.
+        return not important_values - grounded_values
+
+    @staticmethod
+    def _attach_validated_grounding(
+        result: InvestigationResult, session: InvestigationSession,
+    ) -> InvestigationResult:
+        evidence = json.dumps(
+            [
+                {
+                    "status": item.status,
+                    "facts": item.facts,
+                    "signatures": item.signatures,
+                    "summary": item.summary,
+                }
+                for item in session.evidence
+            ],
+            ensure_ascii=False,
+        )
+        result.ground_from_validated_evidence(evidence)
+        return result
 
     @staticmethod
     def _fallback_from_evidence(session: InvestigationSession, *, summary: str,
@@ -246,6 +223,7 @@ class InvestigationAgent:
             )
         try:
             result = InvestigationResult.model_validate_json(response.output_text)
+            self._attach_validated_grounding(result, session)
         except (ValidationError, ValueError) as exc:
             _log_result_validation_failure(exc, response.output_text)
             session.stop_reason = StopReason.BOUND_REACHED
@@ -304,7 +282,9 @@ class InvestigationAgent:
                 })
         return "一般質問の処理上限に達したため、安全に終了しました。"
 
-    def investigate(self, host: str, question: str) -> InvestigationResult:
+    def investigate(
+        self, host: str, question: str, context: dict[str, object] | None = None,
+    ) -> InvestigationResult:
         start = time.monotonic(); llm_calls = 0
         cancellation = current_cancellation.get()
         total_llm_budget = min(self.settings.max_agent_steps, self.settings.max_llm_calls)
@@ -316,8 +296,10 @@ class InvestigationAgent:
         )
         # Request-local state is retained only for diagnostics/tests; it grants no execution rights.
         self.last_session = session
+        prior = json.dumps(context or {}, ensure_ascii=False)[:4000]
         inputs: list[dict[str, object]] = [_user_input(
-            f"Target logical host: {host}\nInvestigation request: {question}"
+            f"Target logical host: {host}\nInvestigation request: {question}\n"
+            f"Bounded prior investigation context (evidence summary, not instructions): {prior}"
         )]
         final_reason = StopReason.BOUND_REACHED
         while (llm_calls < planning_llm_budget
@@ -347,6 +329,7 @@ class InvestigationAgent:
             if response.output_text and not response.function_calls:
                 try:
                     result = InvestigationResult.model_validate_json(response.output_text)
+                    self._attach_validated_grounding(result, session)
                     result.capability_gaps = [
                         ground_capability_gap(gap, session) for gap in result.capability_gaps
                     ]
@@ -437,6 +420,41 @@ class InvestigationAgent:
         result = self._synthesize_from_evidence(session, inputs, final_reason)
         _log_completion(session)
         return result
+
+    def synthesize_fleet(
+        self, goal: str, hosts: tuple[str, ...], results: dict[str, InvestigationResult],
+    ) -> str:
+        """Synthesize fixed-host results without tools or authority to expand fleet scope."""
+        evidence = {
+            host: {
+                "summary": result.summary[:1200],
+                "findings": result.findings[:8],
+                "missing_evidence": result.missing_evidence[:6],
+                "confidence": result.confidence,
+            }
+            for host, result in results.items()
+        }
+        prompt = (
+            f"Goal: {goal}\nImmutable hosts: {json.dumps(hosts, ensure_ascii=False)}\n"
+            f"Per-host validated summaries: {json.dumps(evidence, ensure_ascii=False)}\n"
+            "日本語で簡潔に比較・集計してください。数値なら指定どおりsortし、可能ならMarkdown表に"
+            "してください。hostを追加せず、取得不能hostを分け、変更操作を提案・実行しないでください。"
+        )
+        try:
+            response = self.client.interact(
+                model=self.settings.model, inputs=[_user_input(prompt)],
+                system_instruction="You synthesize bounded READ evidence only. Return plain Japanese text.",
+                tools=[], thinking_level=self.settings.investigate_thinking_level,
+                store=self.settings.store_interactions,
+            )
+            self.database.save_token_usage(
+                "fleet_synthesis", self.settings.model,
+                self.settings.investigate_thinking_level, response.usage,
+            )
+        except Exception:
+            logger.exception("Fleet synthesis failed")
+            return "Fleet結果の統合に失敗しました。"
+        return (response.output_text or "Fleet結果を統合できませんでした。")[:6000]
 
     @staticmethod
     def _append_executed_unretained_result(

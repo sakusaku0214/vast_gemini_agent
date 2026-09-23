@@ -4,11 +4,17 @@ import threading
 from contextlib import contextmanager
 from enum import StrEnum
 
+from vast_agent.jobs.cancellation import CancellationToken
+
 
 class LockClass(StrEnum):
     READ = "READ"
     HEAVY_READ = "HEAVY_READ"
     WRITE = "WRITE"
+
+
+class LockAcquisitionCancelled(RuntimeError):
+    """Raised when a queued host lock is cancelled before it is acquired."""
 
 
 class HostLockManager:
@@ -19,10 +25,13 @@ class HostLockManager:
         self._states: dict[str, _HostState] = {}
 
     @contextmanager
-    def acquire(self, host: str, lock_class: LockClass):
+    def acquire(
+        self, host: str, lock_class: LockClass,
+        cancellation: CancellationToken | None = None,
+    ):
         with self._guard:
             state = self._states.setdefault(host.casefold(), _HostState())
-        state.acquire(lock_class)
+        state.acquire(lock_class, cancellation)
         try:
             yield
         finally:
@@ -37,22 +46,52 @@ class _HostState:
         self.writer = False
         self.waiting_writers = 0
 
-    def acquire(self, kind: LockClass) -> None:
+    def acquire(self, kind: LockClass, cancellation: CancellationToken | None = None) -> None:
+        def wake_waiter() -> None:
+            with self.condition:
+                self.condition.notify_all()
+
+        if cancellation:
+            cancellation.register(wake_waiter)
         with self.condition:
-            if kind == LockClass.WRITE:
-                self.waiting_writers += 1
-                try:
-                    self.condition.wait_for(lambda: not self.writer and not self.heavy and self.readers == 0)
-                    self.writer = True
-                finally:
-                    self.waiting_writers -= 1
-            elif kind == LockClass.HEAVY_READ:
-                self.condition.wait_for(lambda: not self.writer and not self.heavy and not self.waiting_writers)
-                self.heavy = True
-                self.readers += 1
-            else:
-                self.condition.wait_for(lambda: not self.writer and not self.waiting_writers)
-                self.readers += 1
+            try:
+                def cancelled() -> bool:
+                    return bool(cancellation and cancellation.cancelled)
+
+                if kind == LockClass.WRITE:
+                    self.waiting_writers += 1
+                    try:
+                        self.condition.wait_for(
+                            lambda: cancelled() or (
+                                not self.writer and not self.heavy and self.readers == 0
+                            )
+                        )
+                        if cancelled():
+                            raise LockAcquisitionCancelled
+                        self.writer = True
+                    finally:
+                        self.waiting_writers -= 1
+                        self.condition.notify_all()
+                elif kind == LockClass.HEAVY_READ:
+                    self.condition.wait_for(
+                        lambda: cancelled() or (
+                            not self.writer and not self.heavy and not self.waiting_writers
+                        )
+                    )
+                    if cancelled():
+                        raise LockAcquisitionCancelled
+                    self.heavy = True
+                    self.readers += 1
+                else:
+                    self.condition.wait_for(
+                        lambda: cancelled() or (not self.writer and not self.waiting_writers)
+                    )
+                    if cancelled():
+                        raise LockAcquisitionCancelled
+                    self.readers += 1
+            finally:
+                if cancellation:
+                    cancellation.unregister(wake_waiter)
 
     def release(self, kind: LockClass) -> None:
         with self.condition:

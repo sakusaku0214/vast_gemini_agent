@@ -6,10 +6,11 @@ from vast_agent.actions.operation_plan import OperationPlan, render_operation_pr
 
 def plan(**overrides):
     values = dict(host="garage-x570", host_source="conversation context", executable="systemctl",
-                  argv=["restart", "vastai.service"], requires_sudo=True, target="vastai.service",
+                  argv=["restart", "custom-worker.service"], requires_sudo=True,
+                  target="custom-worker.service",
                   reason="daemon unresponsive", expected_effect="restart one service",
                   verification_plan="query service state", command_source="CLI help + Agent planning",
-                  verification_kind="service_state", verification_target="vastai.service",
+                  verification_kind="service_state", verification_target="custom-worker.service",
                   current_relevant_state="failed", active_workload="none", running_vm="none")
     values.update(overrides)
     return OperationPlan(**values)
@@ -17,10 +18,12 @@ def plan(**overrides):
 
 def test_plan_fingerprint_covers_exact_operation_and_preflight():
     original = plan()
-    changed = plan(argv=["restart", "docker.service"], target="docker.service",
-                   verification_target="docker.service")
+    changed = plan(argv=["restart", "other-worker.service"], target="other-worker.service",
+                   verification_target="other-worker.service")
     assert original.fingerprint({"reachable": True}) != changed.fingerprint({"reachable": True})
-    assert original.execution_argv() == ("sudo", "-n", "systemctl", "restart", "vastai.service")
+    assert original.execution_argv() == (
+        "sudo", "-n", "systemctl", "restart", "custom-worker.service",
+    )
 
 
 def test_hard_floor_and_shell_strings_are_rejected():
@@ -54,3 +57,20 @@ def test_proposal_is_self_contained():
                   "Running VM:", "Reason:", "Expected effect:", "Known side effects:",
                   "Verification plan:", "Rollback available:", "Expiry:"):
         assert label in rendered
+
+
+@pytest.mark.parametrize(("executable", "argv"), [
+    ("reboot", ["now"]),
+    ("shutdown", ["-r", "now"]),
+    ("nvidia-smi", ["--gpu-reset", "-i", "0"]),
+    ("systemctl", ["restart", "docker.service"]),
+    ("systemctl", ["restart", "vastai.service"]),
+    ("systemctl", ["restart", "libvirtd.service"]),
+    ("apt-get", ["install", "nvitop"]),
+])
+def test_generic_plan_cannot_bypass_typed_action_safety(executable, argv):
+    with pytest.raises(ValidationError):
+        plan(
+            executable=executable, argv=argv, target="explicit target",
+            verification_kind="unavailable", verification_target=None,
+        )

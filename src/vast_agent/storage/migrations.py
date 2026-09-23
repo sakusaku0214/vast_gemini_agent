@@ -76,4 +76,12 @@ MIGRATIONS: tuple[str, ...] = (
     """
     ALTER TABLE conversation_state ADD COLUMN write_context_host TEXT;
     """,
+    """
+    ALTER TABLE conversation_state ADD COLUMN context_hosts_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE conversation_state ADD COLUMN context_kind TEXT NOT NULL DEFAULT 'none';
+    ALTER TABLE conversation_state ADD COLUMN context_source TEXT;
+    """,
+    """
+    ALTER TABLE conversation_state ADD COLUMN investigation_context_json TEXT NOT NULL DEFAULT '{}';
+    """,
 )

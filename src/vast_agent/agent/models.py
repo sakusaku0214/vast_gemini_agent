@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
-
-from vast_agent.actions.models import ActionType
 
 
 class Route(StrEnum):
@@ -21,22 +20,6 @@ class IntentDecision(BaseModel):
     action: str | None = None
     scope: str | None = None
     reason: str | None = None
-
-
-class ActionIntentCandidate(BaseModel):
-    """Untrusted model interpretation; application code must ground and type it."""
-
-    model_config = ConfigDict(extra="forbid")
-    action_type: ActionType | None = None
-    parameters: dict[str, object] = Field(default_factory=dict)
-
-
-class HostOperationIntentCandidate(BaseModel):
-    """Routing-only semantic result; it carries no host, target, argv, or authority."""
-
-    model_config = ConfigDict(extra="forbid")
-    intent: Literal["READ", "WRITE", "ADVICE", "GENERAL", "UNCERTAIN"]
-    reason: str = Field(max_length=200)
 
 
 class InspectHostArgs(BaseModel):
@@ -201,8 +184,22 @@ class InvestigationResult(BaseModel):
         "PHYSICAL_CHECK_REQUIRED",
     ] = "CONTINUE_OBSERVING"
     missing_evidence: list[str] = Field(default_factory=list)
+    # Understanding a requested mutation is part of investigation, not a routing gate.  This
+    # flag carries no execution authority; application grounding and approval remain mandatory.
+    mutation_requested: bool = False
+    mutation_goal: str | None = Field(default=None, max_length=500)
     capability_gaps: list[CapabilityGap] = Field(default_factory=list, max_length=3)
     stop_reason: Literal[
         "ANSWERABLE", "BOUND_REACHED", "TOOL_UNAVAILABLE", "NO_NEW_EVIDENCE",
         "CAPABILITY_GAP", "ERROR", "CANCELLED",
     ] | None = None
+    # Populated only by application code from retained, validated READ records. These fields
+    # cannot be supplied by model JSON and therefore carry provenance for operation grounding.
+    _validated_evidence: str = PrivateAttr(default="")
+    _validated_numeric_values: frozenset[str] = PrivateAttr(default_factory=frozenset)
+
+    def ground_from_validated_evidence(self, evidence: str) -> None:
+        self._validated_evidence = evidence[:8000]
+        self._validated_numeric_values = frozenset(
+            re.findall(r"\d+(?:\.\d+)?", self._validated_evidence)
+        )
