@@ -319,3 +319,8 @@ def test_budget_exhaustion_gets_tool_free_final_synthesis(tmp_path, host_registr
     assert answer == "取得済み証拠から回答します。"
     assert client.calls == 2
     assert client.requests[-1]["tools"] == []
+    final_input = client.requests[-1]["inputs"][-1]
+    final_text = final_input["content"][0]["text"]
+    assert "ここまでに確認できたデータ" in final_text
+    assert "さらに深掘りしますか" in final_text
+    assert "続けて" in final_text
