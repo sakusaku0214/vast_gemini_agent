@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from vast_agent.storage.database import Database
 
@@ -16,6 +16,7 @@ class ConversationState:
     current_hosts: tuple[str, ...] = ()
     context_kind: str = "none"
     context_source: str | None = None
+    investigation_context: dict[str, object] = field(default_factory=dict)
 
 
 class ConversationStore:
@@ -34,6 +35,9 @@ class ConversationStore:
             current_hosts=tuple(json.loads(str(row.get("context_hosts_json") or "[]"))) if row else (),
             context_kind=str(row.get("context_kind") or "none") if row else "none",
             context_source=row.get("context_source") if row else None,
+            investigation_context=json.loads(
+                str(row.get("investigation_context_json") or "{}"),
+            ) if row else {},
         )
 
     def save(self, owner: int | str, channel: int | str, state: ConversationState) -> None:
@@ -41,4 +45,5 @@ class ConversationStore:
                                         state.last_job_id, state.last_scope,
                                         state.last_recommended_action, state.write_context_host,
                                         json.dumps(state.current_hosts), state.context_kind,
-                                        state.context_source)
+                                        state.context_source,
+                                        json.dumps(state.investigation_context, ensure_ascii=False))

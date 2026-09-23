@@ -66,7 +66,7 @@ class PlanningAgent:
             known_side_effects=["active SRBMiner workload performance changes"],
             verification_plan="re-read GPU clock, power, temperature, utilization, and process",
             verification_kind="gpu_state", verification_target="0",
-            command_source="current user request + CLI help + READ evidence",
+            command_source="bounded value derived from request + CLI help + READ evidence",
             current_relevant_state="340 W, 1800 MHz, 70 C",
             active_workload="SRBMiner-MULTI active (materially affected)", running_vm="none",
             rollback="new Proposal for nvidia-smi --reset-gpu-clocks",

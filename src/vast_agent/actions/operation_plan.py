@@ -64,6 +64,29 @@ class OperationPlan(BaseModel):
             raise ValueError("shell, sudo, and environment wrappers are not operation executables")
         if exe in _DESTRUCTIVE or exe.startswith("mkfs."):
             raise ValueError("destructive storage/firmware operation is prohibited")
+        # Operations with dedicated ActionTypes must never bypass their stricter policy,
+        # preflight, verifier, or reboot coordinator through generic approved argv.
+        if exe in {"reboot", "shutdown", "poweroff", "halt"}:
+            raise ValueError("host power operations require the typed reboot path")
+        if exe in {"apt", "apt-get", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper"}:
+            raise ValueError("package changes require the typed package path")
+        if exe == "nvidia-smi" and any(
+            word in {"-r", "--gpu-reset"} or word.startswith("--gpu-reset=") for word in words
+        ):
+            raise ValueError("GPU reset requires the typed GPU reset path")
+        if exe == "systemctl" and words and words[0] in {"restart", "start", "stop"} and any(
+            unit in words for unit in {
+                "vastai", "vastai.service", "docker", "docker.service",
+                "libvirtd", "libvirtd.service",
+            }
+        ):
+            raise ValueError("protected service changes require a typed service action")
+        if exe == "docker" and any(word in {"restart", "start", "stop"} for word in words):
+            raise ValueError("container lifecycle changes require a typed container action")
+        if exe == "virsh" and words and words[0] in {
+            "start", "shutdown", "destroy", "reboot", "attach-device", "detach-device",
+        }:
+            raise ValueError("VM lifecycle or mode changes require a typed VM action")
         joined = " ".join(words)
         if any(marker in joined for marker in (".ssh", "credentials", "shadow", "token", "secret")):
             raise ValueError("credential or secret access is prohibited")

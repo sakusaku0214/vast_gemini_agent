@@ -76,8 +76,6 @@ def validate_read_argv(executable: str, argv: Sequence[str], *, help_only: bool 
     if any(item in {"-c", "--command"} for item in folded):
         return ReadValidation(ReadClassification.BLOCKED, "COMMAND_INTERPRETER_OPTION")
     words = tuple(item.lstrip("-").split("=", 1)[0] for item in folded if not item.startswith("/"))
-    if any(word in _MUTATION_VERBS or word.startswith("mkfs.") for word in words):
-        return ReadValidation(ReadClassification.MUTATION, "MUTATION_VERB")
     # ``-h`` is deliberately not universal help (for example shutdown -h now).
     # Subcommand help is safe only when every preceding word is a known READ verb.
     is_help = folded in (("--help",), ("help",)) or (
@@ -93,13 +91,44 @@ def validate_read_argv(executable: str, argv: Sequence[str], *, help_only: bool 
     if exe == "systemctl":
         if folded and folded[0] in {"status", "show", "list-units", "list-unit-files", "is-active", "is-enabled", "is-failed"}:
             return ReadValidation(ReadClassification.READ, "SYSTEMCTL_QUERY")
+        if folded and folded[0] in {"restart", "start", "stop", "enable", "disable", "mask", "unmask"}:
+            return ReadValidation(ReadClassification.MUTATION, "SYSTEMCTL_MUTATION")
         return ReadValidation(ReadClassification.UNCERTAIN, "SYSTEMCTL_FORM_NOT_SAFE")
     if exe == "nvidia-smi":
+        if any(item in {"-r", "--gpu-reset", "-pm", "--persistence-mode"}
+               or item.startswith(("--lock-", "--reset-", "--power-limit")) for item in folded):
+            return ReadValidation(ReadClassification.MUTATION, "NVIDIA_SMI_MUTATION")
         if not folded or folded == ("-l",):
             return ReadValidation(ReadClassification.READ, "NVIDIA_SMI_QUERY")
-        if all(item == "-l" or item.startswith(("--query-gpu=", "--format=")) for item in folded):
+        if all(item in {"-l", "-lms", "-q"} or item in {"-i", "--id"}
+               or item.isdigit() or item.startswith(("--query-gpu=", "--query-compute-apps=", "--format="))
+               for item in folded):
             return ReadValidation(ReadClassification.READ, "NVIDIA_SMI_QUERY")
         return ReadValidation(ReadClassification.UNCERTAIN, "NVIDIA_SMI_FORM_NOT_SAFE")
+    if exe == "journalctl":
+        if any(item.startswith(("--vacuum-", "--rotate", "--flush", "--sync",
+                                "--relinquish-var", "--smart-relinquish-var"))
+               for item in folded):
+            return ReadValidation(ReadClassification.MUTATION, "JOURNAL_MUTATION")
+        return ReadValidation(ReadClassification.READ, "JOURNAL_QUERY")
+    if exe == "last":
+        return ReadValidation(ReadClassification.READ, "LOGIN_HISTORY_QUERY")
+    if exe in {"uptime", "ps", "pgrep", "lspci", "lsblk", "uname"}:
+        return ReadValidation(ReadClassification.READ, "DIAGNOSTIC_QUERY")
+    if exe == "docker":
+        if folded and folded[0] in {"ps", "images", "inspect", "info", "version", "stats", "logs", "top"}:
+            return ReadValidation(ReadClassification.READ, "DOCKER_QUERY")
+        if any(word in _MUTATION_VERBS for word in words):
+            return ReadValidation(ReadClassification.MUTATION, "DOCKER_MUTATION")
+        return ReadValidation(ReadClassification.UNCERTAIN, "DOCKER_FORM_NOT_SAFE")
+    if exe == "virsh":
+        if folded and folded[0] in {"list", "dominfo", "domstate", "domstats", "nodeinfo", "version"}:
+            return ReadValidation(ReadClassification.READ, "VIRSH_QUERY")
+        if any(word in _MUTATION_VERBS for word in words):
+            return ReadValidation(ReadClassification.MUTATION, "VIRSH_MUTATION")
+        return ReadValidation(ReadClassification.UNCERTAIN, "VIRSH_FORM_NOT_SAFE")
+    if any(word in _MUTATION_VERBS or word.startswith("mkfs.") for word in words):
+        return ReadValidation(ReadClassification.MUTATION, "MUTATION_VERB")
     if not folded or all(item.startswith("-") for item in folded):
         return ReadValidation(ReadClassification.UNCERTAIN, "OPTIONS_ONLY_UNKNOWN")
     if any(word in _READ_VERBS for word in words):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from dataclasses import dataclass
 
@@ -75,18 +76,21 @@ class AgentService:
                     return ServiceReply(f"停止対象を指定してください。実行中: {candidates}")
                 target = int(running[0]["id"])
             return ServiceReply(f"Job #{target}: {self.jobs.cancel(target)}", target)
-        fleet_hosts = self._resolve_host_set(text)
-        if self._is_fleet(folded) and any(
-            word in folded for word in ("再起動", "restart", "reset", "リセット", "reboot", "全部")
-        ):
-            return ServiceReply("fleet WRITEは禁止されています。対象hostを1台指定してください。")
-        if fleet_hosts and (self._is_fleet(folded) or len(fleet_hosts) > 1):
+        fleet_hosts = self._resolve_host_set(text, state)
+        fleet_scope = self._is_explicit_fleet(folded) or (
+            "全部" in folded and state.context_kind == "fleet"
+        ) or len(fleet_hosts) > 1
+        if fleet_hosts and fleet_scope:
             if "通信量" in folded or "vnstat" in folded:
                 return await self._fleet_traffic(
                     self._clean(text), state, owner, channel, fleet_hosts,
                 )
-            scope = "gpu" if "gpu" in folded else "vast" if "vast" in folded else "system"
-            return await self._fleet(self._clean(text), scope, state, owner, channel, fleet_hosts)
+            if any(phrase in folded for phrase in ("gpu状態", "gpu温度", "vast状態")):
+                scope = "gpu" if "gpu" in folded else "vast"
+                return await self._fleet(self._clean(text), scope, state, owner, channel, fleet_hosts)
+            return await self._fleet_adaptive(
+                self._clean(text), state, owner, channel, fleet_hosts,
+            )
 
         from_recommendation = folded in {"それやって", "それをやって"}
         if from_recommendation:
@@ -200,7 +204,7 @@ class AgentService:
                     if token.cancelled: return "cancelled"
                     if decision.route == Route.AGENT:
                         if self.agent is None: return "Gemini unavailable: GEMINI_API_KEY is not configured."
-                        result = self.agent.investigate(host.name, safe_text)
+                        result = self._call_investigate(host.name, safe_text, state.investigation_context)
                         return result
                     record = self.inspection.inspect_and_record(host, self.executor, decision.scope, token)
                     return self._format_observation(record.observation, decision.scope)
@@ -218,6 +222,11 @@ class AgentService:
         except Exception:
             summary = "調査を完了できませんでした。詳細はagent logを確認してください。"
             self.jobs.finish(job, summary, "SERVICE_ERROR")
+        if investigation_result is not None:
+            state.investigation_context = self._compact_context(
+                safe_text, (host.name,), investigation_result,
+            )
+            self.conversations.save(owner, channel, state)
         if (investigation_result is not None
                 and acquisition_intent(text) == AcquisitionIntent.PROPOSE_IF_NEEDED):
             requests = [
@@ -243,11 +252,29 @@ class AgentService:
             )
         return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
 
+    def _call_investigate(self, host: str, goal: str, context: dict[str, object]):
+        method = self.agent.investigate
+        if "context" in inspect.signature(method).parameters:
+            return method(host, goal, context=context)
+        return method(host, goal)
+
+    @staticmethod
+    def _compact_context(goal: str, hosts: tuple[str, ...], result) -> dict[str, object]:
+        """Persist conclusions only; raw logs and unbounded tool payloads are excluded."""
+        return {
+            "previous_goal": goal[:500],
+            "hosts": list(hosts)[:16],
+            "conclusion": result.summary[:1200],
+            "key_findings": [str(item)[:300] for item in result.findings[:8]],
+            "missing_evidence": [str(item)[:300] for item in result.missing_evidence[:6]],
+            "confidence": result.confidence,
+        }
+
     async def _proposal_from_investigation(
         self, text, owner, channel, state, host, investigation,
     ) -> ServiceReply:
         """Turn the Agent's post-READ conclusion into one inert, approval-gated plan."""
-        if self._is_fleet(text.casefold()):
+        if self._is_explicit_fleet(text.casefold()):
             return ServiceReply("fleet WRITEは禁止されています。対象hostを1台指定してください。")
         planner = getattr(self.agent, "plan_operation", None) if self.agent else None
         if planner is None or self.actions is None:
@@ -353,8 +380,10 @@ class AgentService:
             except KeyError: pass
         # Scope resolution is independent of READ/WRITE interpretation. A preceding single-host
         # investigation establishes context for natural follow-ups; fleet never does.
-        if (self.remember_last_host and state.last_host and not self._is_fleet(folded)
-                and (self._has_host_relevance(folded) or self._is_read_follow_up(folded))):
+        if (self.remember_last_host and state.last_host and not self._is_explicit_fleet(folded)
+                and (self._has_host_relevance(folded) or self._is_read_follow_up(folded)
+                     or (state.investigation_context
+                         and re.fullmatch(r"\s*(?:つまり|要するに)[^\n]{0,20}", folded)))):
             try: return self.registry.resolve(state.last_host), []
             except KeyError: pass
         return None, []
@@ -366,7 +395,7 @@ class AgentService:
             return True
         return any(term in text for term in (
             "状態", "二枚", "片方", "通信量", "温度", "ディスク", "サービス",
-            "パッケージ", "実行ファイル", "さっき", "このホスト", "このマシン",
+            "パッケージ", "実行ファイル", "ログ", "さっき", "このホスト", "このマシン",
         ))
 
     def _resolve_write_host(self, text: str, state: ConversationState):
@@ -385,7 +414,7 @@ class AgentService:
         vague_only = folded.strip() in {"そっち", "それ", "あれ", "適当に", "そっち適当に絞って"}
         if (self.remember_last_host and state.last_host and state.last_scope
                 and state.write_context_host == state.last_host
-                and concrete_target and not vague_only and not self._is_fleet(folded)):
+                and concrete_target and not vague_only and not self._is_explicit_fleet(folded)):
             try:
                 return self.registry.resolve(state.last_host), "conversation context", []
             except KeyError:
@@ -441,20 +470,92 @@ class AgentService:
         )
 
     @staticmethod
-    def _is_fleet(text: str) -> bool:
-        return any(word in text for word in ("全台", "全マシン", "fleet ", "全部"))
+    def _is_explicit_fleet(text: str) -> bool:
+        return any(word in text for word in ("全台", "全マシン", "fleet"))
 
-    def _resolve_host_set(self, text: str):
+    def _resolve_host_set(self, text: str, state: ConversationState):
         """Resolve and freeze scope in application code; the model never selects addresses."""
         folded = text.casefold()
         enabled = [host for host in self.registry.hosts.values() if host.enabled]
-        if self._is_fleet(folded):
+        if self._is_explicit_fleet(folded):
             return tuple(enabled)
+        if "全部" in folded and state.context_kind == "fleet":
+            names = set(state.current_hosts)
+            return tuple(host for host in enabled if host.name in names)
         matches = [
             host for host in enabled
             if any(name.casefold() in folded for name in (host.name, *host.aliases))
         ]
         return tuple(matches)
+
+    async def _fleet_adaptive(self, request, state, owner, channel, hosts) -> ServiceReply:
+        """Run the same safe InvestigationAgent independently across a fixed host set."""
+        job, token = self.jobs.create("fleet-investigate", None, request)
+        state.last_host = None
+        state.write_context_host = None
+        state.current_hosts = tuple(host.name for host in hosts)
+        state.context_kind = "fleet"
+        state.context_source = "explicit"
+        state.last_job_id = job.id
+        state.last_scope = "fleet"
+        self.conversations.save(owner, channel, state)
+        self.jobs.start(job)
+        semaphore = asyncio.Semaphore(self.max_parallel_hosts)
+
+        async def one(host):
+            async with semaphore:
+                if token.cancelled:
+                    return host.name, None, "cancelled"
+                def investigate_host():
+                    context = current_cancellation.set(token)
+                    try:
+                        with self.jobs.locks.acquire(host.name, LockClass.HEAVY_READ):
+                            if token.cancelled:
+                                return None
+                            return self._call_investigate(host.name, request, {})
+                    finally:
+                        current_cancellation.reset(context)
+                try:
+                    return host.name, await asyncio.to_thread(investigate_host), None
+                except Exception:
+                    return host.name, None, "investigation failed"
+
+        collected = await asyncio.gather(*(one(host) for host in hosts))
+        results = {name: result for name, result, error in collected if result is not None}
+        unavailable = {name: error for name, result, error in collected if result is None}
+        mutation_requested = (
+            any(result.mutation_requested for result in results.values())
+            or route_intent(request, self.registry).route == Route.UNSUPPORTED_WRITE
+            or acquisition_intent(request) != AcquisitionIntent.READ_ONLY
+        )
+        synthesizer = getattr(self.agent, "synthesize_fleet", None) if self.agent else None
+        if synthesizer and results:
+            summary = await asyncio.to_thread(
+                synthesizer, request, tuple(host.name for host in hosts), results,
+            )
+        else:
+            summary = "\n".join(
+                f"- **{name}**: {result.summary}" for name, result in results.items()
+            ) or "利用可能なhost結果がありません。"
+        if unavailable:
+            summary += "\n\nUnavailable\n" + "\n".join(
+                f"- {name}: {error}" for name, error in unavailable.items()
+            )
+        if mutation_requested:
+            summary += (
+                "\n\nfleet WRITEは実行できません。必要なら対象hostを1台ずつ明示して、"
+                "個別のProposalを作成してください。"
+            )
+        state.investigation_context = {
+            "previous_goal": request[:500],
+            "hosts": list(state.current_hosts),
+            "conclusion": summary[:1200],
+            "key_findings": [result.summary[:300] for result in results.values()][:8],
+            "missing_evidence": list(unavailable)[:6],
+        }
+        self.conversations.save(owner, channel, state)
+        self.jobs.finish(job, self._clean(summary), "FLEET_PARTIAL_FAILURE" if unavailable else None)
+        return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
 
     async def _fleet(self, request: str, scope: str, state: ConversationState,
                      owner, channel, hosts=None) -> ServiceReply:

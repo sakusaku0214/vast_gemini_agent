@@ -127,15 +127,30 @@ def _api_key(paths: RuntimePaths) -> str | None:
 
 
 def _secrets(paths: RuntimePaths) -> dict[str, str]:
+    """Load Agent secrets without letting unrelated global variables override runtime state.
+
+    Values are returned under their legacy/canonical names because downstream components do not
+    need to know where a secret came from.  Agent-specific variables are the only environment
+    values allowed to override the runtime file.
+    """
     values: dict[str, str] = {}
+    keys = (
+        "GEMINI_API_KEY", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID",
+        "DISCORD_OWNER_USER_ID", "SEARCH_API_KEY",
+    )
+    # Legacy generic variables are fallback defaults only.
+    for key in keys:
+        if value := os.environ.get(key):
+            values[key] = value
     if paths.secrets_file.exists():
         for line in paths.secrets_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, value = line.split("=", 1); values[key.strip()] = value.strip().strip("'\"")
-    for key in ("GEMINI_API_KEY", "DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID", "DISCORD_OWNER_USER_ID",
-                "SEARCH_API_KEY"):
-        if os.environ.get(key): values[key] = os.environ[key]
+    # Explicit Agent-scoped variables have highest precedence and map to canonical keys.
+    for key in keys:
+        if value := os.environ.get(f"VAST_AGENT_{key}"):
+            values[key] = value
     return values
 
 

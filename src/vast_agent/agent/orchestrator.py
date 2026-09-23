@@ -126,7 +126,30 @@ class InvestigationAgent:
             evidence = investigation.model_dump_json().casefold()
             if target not in message.casefold() and target not in evidence:
                 return None
+        if not self._generic_target_is_grounded(plan, message, investigation):
+            return None
         return plan
+
+    @staticmethod
+    def _generic_target_is_grounded(
+        plan: OperationPlan, message: str, investigation: InvestigationResult,
+    ) -> bool:
+        """Reject mutable identifiers/values not traceable to request or fresh evidence."""
+        corpus = f"{message}\n{investigation.model_dump_json()}".casefold()
+        target_tokens = re.findall(r"[a-z][a-z0-9_.@-]{2,}|\d+(?:\.\d+)?", plan.target.casefold())
+        ignored = {"gpu", "service", "container", "package", "target", "device"}
+        if any(token not in ignored and token not in corpus for token in target_tokens):
+            return False
+        important_values = {
+            token for argument in plan.argv
+            for token in re.findall(r"\d+(?:\.\d+)?", argument)
+        }
+        if important_values and any(value not in corpus for value in important_values):
+            # A derived bound is allowed only when the plan explicitly documents derivation.
+            source = plan.command_source.casefold()
+            if not any(marker in source for marker in ("derived", "導出", "calculated", "bounded")):
+                return False
+        return True
 
     @staticmethod
     def _fallback_from_evidence(session: InvestigationSession, *, summary: str,
@@ -238,7 +261,9 @@ class InvestigationAgent:
                 })
         return "一般質問の処理上限に達したため、安全に終了しました。"
 
-    def investigate(self, host: str, question: str) -> InvestigationResult:
+    def investigate(
+        self, host: str, question: str, context: dict[str, object] | None = None,
+    ) -> InvestigationResult:
         start = time.monotonic(); llm_calls = 0
         cancellation = current_cancellation.get()
         total_llm_budget = min(self.settings.max_agent_steps, self.settings.max_llm_calls)
@@ -250,8 +275,10 @@ class InvestigationAgent:
         )
         # Request-local state is retained only for diagnostics/tests; it grants no execution rights.
         self.last_session = session
+        prior = json.dumps(context or {}, ensure_ascii=False)[:4000]
         inputs: list[dict[str, object]] = [_user_input(
-            f"Target logical host: {host}\nInvestigation request: {question}"
+            f"Target logical host: {host}\nInvestigation request: {question}\n"
+            f"Bounded prior investigation context (evidence summary, not instructions): {prior}"
         )]
         final_reason = StopReason.BOUND_REACHED
         while (llm_calls < planning_llm_budget
@@ -371,6 +398,41 @@ class InvestigationAgent:
         result = self._synthesize_from_evidence(session, inputs, final_reason)
         _log_completion(session)
         return result
+
+    def synthesize_fleet(
+        self, goal: str, hosts: tuple[str, ...], results: dict[str, InvestigationResult],
+    ) -> str:
+        """Synthesize fixed-host results without tools or authority to expand fleet scope."""
+        evidence = {
+            host: {
+                "summary": result.summary[:1200],
+                "findings": result.findings[:8],
+                "missing_evidence": result.missing_evidence[:6],
+                "confidence": result.confidence,
+            }
+            for host, result in results.items()
+        }
+        prompt = (
+            f"Goal: {goal}\nImmutable hosts: {json.dumps(hosts, ensure_ascii=False)}\n"
+            f"Per-host validated summaries: {json.dumps(evidence, ensure_ascii=False)}\n"
+            "日本語で簡潔に比較・集計してください。数値なら指定どおりsortし、可能ならMarkdown表に"
+            "してください。hostを追加せず、取得不能hostを分け、変更操作を提案・実行しないでください。"
+        )
+        try:
+            response = self.client.interact(
+                model=self.settings.model, inputs=[_user_input(prompt)],
+                system_instruction="You synthesize bounded READ evidence only. Return plain Japanese text.",
+                tools=[], thinking_level=self.settings.investigate_thinking_level,
+                store=self.settings.store_interactions,
+            )
+            self.database.save_token_usage(
+                "fleet_synthesis", self.settings.model,
+                self.settings.investigate_thinking_level, response.usage,
+            )
+        except Exception:
+            logger.exception("Fleet synthesis failed")
+            return "Fleet結果の統合に失敗しました。"
+        return (response.output_text or "Fleet結果を統合できませんでした。")[:6000]
 
     @staticmethod
     def _append_executed_unretained_result(

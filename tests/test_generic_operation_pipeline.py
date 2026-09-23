@@ -40,7 +40,7 @@ class GenericRemote:
     @property
     def mutations(self):
         return [call for call in self.calls if call == (
-            "sudo", "-n", "systemctl", "restart", "vastai.service",
+            "sudo", "-n", "systemctl", "restart", "custom-worker.service",
         )]
 
 
@@ -61,10 +61,11 @@ def build(tmp_path, *, generic=True):
 def plan():
     return OperationPlan(
         host="garage-x570", host_source="current message", executable="systemctl",
-        argv=["restart", "vastai.service"], requires_sudo=True, target="vastai.service",
+        argv=["restart", "custom-worker.service"], requires_sudo=True,
+        target="custom-worker.service",
         reason="daemon is unresponsive", expected_effect="restart one service",
         verification_plan="read systemd active state", verification_kind="service_state",
-        verification_target="vastai.service", command_source="CLI help + Agent planning",
+        verification_target="custom-worker.service", command_source="CLI help + Agent planning",
         current_relevant_state="failed", active_workload="none", running_vm="none",
     )
 
@@ -82,8 +83,10 @@ def test_approve_executes_exact_argv_once_and_verifies(tmp_path):
     db, coordinator, remote = build(tmp_path)
     proposal = coordinator.propose_operation(plan(), "7")
     assert coordinator.approve(proposal.id, user_id=7, channel_id=9)[0]
-    assert remote.mutations == [("sudo", "-n", "systemctl", "restart", "vastai.service")]
-    assert ("systemctl", "is-active", "--", "vastai.service") in remote.calls
+    assert remote.mutations == [(
+        "sudo", "-n", "systemctl", "restart", "custom-worker.service",
+    )]
+    assert ("systemctl", "is-active", "--", "custom-worker.service") in remote.calls
     assert db.get_action_proposal(proposal.id)["status"] == "SUCCEEDED"
 
 

@@ -26,7 +26,7 @@ def operation(**changes):
         argv=["-i", "0", "--lock-gpu-clocks=1500,1500"], requires_sudo=True,
         target="GPU 0", reason="bounded adjustment", expected_effect="lower GPU clock",
         verification_plan="read GPU state", verification_kind="gpu_state",
-        verification_target="0", command_source="request + evidence",
+        verification_target="0", command_source="bounded value derived from request + evidence",
     )
     values.update(changes)
     return OperationPlan(**values).model_dump_json()
@@ -54,4 +54,15 @@ def test_operation_planner_rejects_changed_host_and_invented_target(tmp_path):
                                                        argv=["-i", "1", "--lock-gpu-clocks=1500,1500"])])
     assert invented.plan_operation(
         "garage-h12ssl-nt", "conversation context", "GPU0を抑えて", evidence(),
+    ) is None
+
+
+def test_operation_planner_rejects_invented_target_and_value_without_verification(tmp_path):
+    invented = agent(tmp_path, [operation(
+        target="fan-zone-9", executable="vendorctl", argv=["set", "fan-zone-9", "87"],
+        verification_kind="unavailable", verification_target=None,
+        command_source="model suggestion",
+    )])
+    assert invented.plan_operation(
+        "garage-h12ssl-nt", "conversation context", "冷却を少し調整して", evidence(),
     ) is None
