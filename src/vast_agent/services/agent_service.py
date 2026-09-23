@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shlex
 from dataclasses import dataclass
 
+from vast_agent.approval import ProposalStore
 from vast_agent.conversation.state import ConversationStore
+from vast_agent.execution.argv import ArgvRejected, validate_write_argv
 from vast_agent.execution.base import redact
 from vast_agent.jobs.cancellation import current_cancellation
 from vast_agent.jobs.manager import JobManager
@@ -28,19 +31,18 @@ class AgentService:
         jobs: JobManager,
         conversations: ConversationStore,
         agent=None,
+        proposals: ProposalStore | None = None,
         max_parallel_hosts: int = 3,
         secrets: tuple[str, ...] = (),
         remember_last_host: bool = True,
     ) -> None:
-        # registry/inspection/executor/max_parallel_hosts stay in the constructor for
-        # runtime compatibility with the Phase 7-9 bootstrap. They are deliberately
-        # not used to interpret natural-language requests here.
         self.registry = registry
         self.inspection = inspection
         self.executor = executor
         self.jobs = jobs
         self.conversations = conversations
         self.agent = agent
+        self.proposals = proposals or ProposalStore(jobs.database)
         self.max_parallel_hosts = max_parallel_hosts
         self.secrets = secrets
         self.remember_last_host = remember_last_host
@@ -72,6 +74,10 @@ class AgentService:
                 target = int(running[0]["id"])
             return ServiceReply(f"Job #{target}: {self.jobs.cancel(target)}", target)
 
+        approval = self._approval_id(text, str(owner), str(channel))
+        if approval is not None:
+            return await self._execute_approved(approval, str(owner), str(channel))
+
         if self.agent is None:
             return ServiceReply("Gemini unavailable: GEMINI_API_KEY is not configured.")
 
@@ -86,7 +92,14 @@ class AgentService:
             try:
                 if token.cancelled:
                     return "cancelled"
-                return self._clean(self.agent.investigate(None, safe_text))
+                return self._clean(
+                    self.agent.investigate(
+                        None,
+                        safe_text,
+                        owner_id=str(owner),
+                        channel_id=str(channel),
+                    )
+                )
             finally:
                 current_cancellation.reset(context)
 
@@ -100,6 +113,82 @@ class AgentService:
 
         return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
 
+    def _approval_id(self, text: str, owner: str, channel: str) -> int | None:
+        match = re.fullmatch(r"\s*承認(?:\s*#?(\d+))?\s*", text)
+        if not match:
+            return None
+        if match.group(1):
+            return int(match.group(1))
+
+        pending = self.proposals.pending_for(owner, channel)
+        if len(pending) == 1:
+            return pending[0].id
+        return -1
+
+    async def _execute_approved(
+        self,
+        proposal_id: int,
+        owner: str,
+        channel: str,
+    ) -> ServiceReply:
+        if proposal_id < 0:
+            pending = self.proposals.pending_for(owner, channel)
+            ids = ", ".join(f"#{item.id}" for item in pending) or "なし"
+            return ServiceReply(f"承認対象を指定してください。承認待ち: {ids}")
+
+        proposal = self.proposals.claim(proposal_id, owner, channel)
+        if proposal is None:
+            existing = self.proposals.get(proposal_id)
+            if existing is None:
+                return ServiceReply(f"Proposal #{proposal_id} は存在しません。")
+            if existing.owner_id != owner or existing.channel_id != channel:
+                return ServiceReply(f"Proposal #{proposal_id} はこのOWNER/channelでは承認できません。")
+            return ServiceReply(
+                f"Proposal #{proposal_id} は承認待ちではありません: {existing.status}"
+            )
+
+        try:
+            host = self.registry.resolve(proposal.host)
+        except KeyError:
+            self.proposals.mark_failed(proposal.id)
+            return ServiceReply(f"Proposal #{proposal.id}: hostが見つかりません。")
+        if not host.enabled:
+            self.proposals.mark_failed(proposal.id)
+            return ServiceReply(f"Proposal #{proposal.id}: hostはdisabledです。")
+
+        try:
+            argv = validate_write_argv(proposal.argv).argv
+        except ArgvRejected as exc:
+            self.proposals.mark_failed(proposal.id)
+            return ServiceReply(f"Proposal #{proposal.id}: WRITE境界で拒否: {exc}")
+
+        result = await asyncio.to_thread(
+            self.executor.execute,
+            host,
+            argv,
+            proposal.timeout,
+            None,
+        )
+        if result.success:
+            self.proposals.mark_executed(proposal.id)
+            status = "EXECUTED"
+        else:
+            self.proposals.mark_failed(proposal.id)
+            status = "FAILED"
+
+        stdout = self._compact(result.stdout)
+        stderr = self._compact(result.stderr)
+        command = shlex.join(argv)
+        text = (
+            f"Proposal #{proposal.id} {status}\n"
+            f"Host: {proposal.host}\n"
+            f"Command: {command}\n"
+            f"Exit: {result.exit_code}\n"
+            f"stdout:\n{stdout or '(empty)'}\n"
+            f"stderr:\n{stderr or '(empty)'}"
+        )
+        return ServiceReply(self._clean(text))
+
     @staticmethod
     def _is_cancel_request(text: str) -> bool:
         return (
@@ -108,6 +197,14 @@ class AgentService:
             or bool(re.search(r"#\d+\s*止めて", text))
             or bool(re.search(r"(?:今の調査|この調査|ジョブ)(?:を)?止めて", text))
         )
+
+    def _compact(self, value: str, limit: int = 2500) -> str:
+        text = self._clean(value)
+        if len(text) <= limit:
+            return text
+        head = limit // 3
+        tail = limit - head
+        return text[:head] + "\n…[truncated]…\n" + text[-tail:]
 
     def _clean(self, value: str) -> str:
         return redact(value, self.secrets)
