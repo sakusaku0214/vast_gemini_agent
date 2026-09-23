@@ -22,7 +22,9 @@ class SSHExecutor:
         # OpenSSH transports the remote command as text. Serialize validated argv
         # so each token remains literal; callers never supply a shell program/string.
         remote_command = shlex.join(command)
-        known_hosts_option = f'UserKnownHostsFile="{self.known_hosts.as_posix()}"'
+        # subprocess already preserves this as one argv token, including spaces.
+        # Embedding quotes makes Windows OpenSSH treat them as part of the path.
+        known_hosts_option = f"UserKnownHostsFile={self.known_hosts.as_posix()}"
         args = [
             self.ssh_executable,
             "-p", str(host.ssh_port),
