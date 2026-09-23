@@ -106,13 +106,13 @@ def test_network_can_lead_to_interface_followup_without_mac_leak(tmp_path, host)
     assert "aa:bb:cc:dd:ee:ff" not in json.dumps(client.requests, default=str)
 
 
-def test_unavailable_command_has_structured_error_and_no_fallback(tmp_path, host):
+def test_unavailable_command_requires_bounded_path_discovery_before_absence(tmp_path, host):
     functions, remote, _ = make_functions(tmp_path, host, {
         "query_executable": ToolResult(success=False, exit_code=127, stderr="missing", duration_ms=1),
     })
     result = evidence(functions.execute("query_executable", {"host": host.name, "executable_name": "vnstat"}, host.name))
-    assert result["error"] == "COMMAND_NOT_AVAILABLE"
-    assert remote.calls == ["query_executable"]
+    assert result == {"executable": "vnstat", "exists": False, "path": None}
+    assert remote.calls == ["query_executable", *["query_executable:candidate"] * 4]
 
 
 def test_capability_discovery_comes_from_registry_without_remote_execution(tmp_path, host):

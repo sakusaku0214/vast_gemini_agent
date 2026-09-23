@@ -90,14 +90,12 @@ def test_approve_executes_exact_argv_once_and_verifies(tmp_path):
     assert db.get_action_proposal(proposal.id)["status"] == "SUCCEEDED"
 
 
-def test_generic_execution_default_deny(tmp_path):
+def test_deprecated_generic_switch_does_not_override_enabled_approval(tmp_path):
     db, coordinator, remote = build(tmp_path, generic=False)
     proposal = coordinator.propose_operation(plan(), "7")
-    assert coordinator.approve(proposal.id, user_id=7, channel_id=9) == (
-        False, "GENERIC_OPERATIONS_DISABLED",
-    )
-    assert remote.mutations == []
-    assert db.get_action_proposal(proposal.id)["status"] == "INVALIDATED"
+    assert coordinator.approve(proposal.id, user_id=7, channel_id=9)[0]
+    assert len(remote.mutations) == 1
+    assert db.get_action_proposal(proposal.id)["status"] == "SUCCEEDED"
 
 
 def test_fresh_state_change_invalidates_before_execution(tmp_path):

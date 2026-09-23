@@ -171,12 +171,12 @@ class ActionCoordinator:
         with self.locks.acquire(host.name, LockClass.WRITE):
             fresh: GenericPreflightSnapshot = self.generic.preflight(host, plan)
             self.db.add_action_event(proposal_id, "PREFLIGHT_RECHECK", "GENERIC_OPERATION")
-            if not self.settings.enabled or not self.settings.generic_operations_enabled:
+            if not self.settings.enabled:
                 self.db.set_proposal_status(
-                    proposal_id, ProposalStatus.INVALIDATED, "GENERIC_OPERATIONS_DISABLED",
+                    proposal_id, ProposalStatus.INVALIDATED, "OPERATIONS_DISABLED",
                 )
-                self.db.add_action_event(proposal_id, "INVALIDATED", "GENERIC_OPERATIONS_DISABLED")
-                return False, "GENERIC_OPERATIONS_DISABLED"
+                self.db.add_action_event(proposal_id, "INVALIDATED", "OPERATIONS_DISABLED")
+                return False, "OPERATIONS_DISABLED"
             if (not fresh.host_enabled or not fresh.ssh_reachable
                     or (plan.requires_sudo and not fresh.sudo_available)):
                 self.db.set_proposal_status(proposal_id, ProposalStatus.INVALIDATED, "PREFLIGHT_BLOCKED")

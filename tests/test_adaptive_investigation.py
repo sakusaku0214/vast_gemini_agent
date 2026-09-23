@@ -350,6 +350,16 @@ def test_tool_failure_is_not_capability_gap(tmp_path, host):
     assert "capability" not in record.status
 
 
+def test_failed_read_is_missing_evidence_with_adaptive_failure_kind():
+    record = compact_evidence("run_readonly_argv", {"untrusted_evidence": {
+        "status": "failed", "failure_kind": "permission_denied",
+        "suggested_next_read": "retry with requires_sudo=true",
+    }}, 500)
+    assert record.status == "evidence_missing"
+    assert record.missing_evidence == ["permission_denied"]
+    assert "requires_sudo=true" in record.summary
+
+
 def test_session_bounds_cache_and_evidence_compaction():
     session = InvestigationSession(
         target_host="host", goal="goal", max_tool_calls=1, max_rounds=1,

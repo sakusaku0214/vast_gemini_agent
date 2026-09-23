@@ -116,12 +116,9 @@ class InvestigationAgent:
             return None
         if plan.host != host or plan.host_source != host_source:
             return None
-        # Host context may select a host, but a mutable GPU target must be authored now.
-        if plan.verification_kind == "gpu_state":
-            target = re.search(r"GPU\s*([0-9]+)", message, re.I)
-            if target is None or target.group(1) != plan.verification_target:
-                return None
-        elif plan.verification_target:
+        # A target may come from this request or validated fresh READ evidence. Context
+        # selects only the host and never authorizes execution.
+        if plan.verification_target:
             target = plan.verification_target.casefold()
             evidence = investigation._validated_evidence.casefold()
             if target not in message.casefold() and target not in evidence:

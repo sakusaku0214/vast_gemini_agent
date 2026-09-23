@@ -109,10 +109,28 @@ def test_gpu_clock_write_inherits_high_confidence_host_and_proposes(tmp_path):
     assert reply.proposal.plan.host_source == "conversation context"
     assert "Host source: conversation context" in reply.text
     assert "SRBMiner-MULTI" in reply.text
-    assert "generic operation execution is disabled" in reply.text
+    assert "generic operation execution is disabled" not in reply.text
     assert db.pending_approval_count() == 1
     assert not any("--lock-gpu-clocks" in " ".join(call) for call in remote.calls)
     assert agent.plans[0][:3] == ("garage-h12ssl-nt", "conversation context", message)
+
+
+def test_natural_clock_release_investigates_inherited_host_before_proposal(tmp_path):
+    app, agent, db, remote = service(tmp_path)
+    first = asyncio.run(app.handle_question("h12sslのGPU状態見て", 7, 9))
+    assert first.job_id is not None
+
+    reply = asyncio.run(app.handle_question(
+        "クロック制限入れてるから開放しておいて。どんなコマンド使ったか教えて", 7, 9,
+    ))
+
+    assert reply.proposal is not None
+    assert reply.proposal.plan.host_source == "conversation context"
+    assert agent.investigations == [(
+        "garage-h12ssl-nt", "クロック制限入れてるから開放しておいて。どんなコマンド使ったか教えて",
+    )]
+    assert db.pending_approval_count() == 1
+    assert not any("--lock-gpu-clocks" in " ".join(call) for call in remote.calls)
 
 
 def test_semantic_advice_never_creates_proposal(tmp_path):

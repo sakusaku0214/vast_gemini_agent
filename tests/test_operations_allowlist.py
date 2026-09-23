@@ -85,25 +85,27 @@ def _request_for_any_action(action_type: ActionType) -> ActionRequest:
     return ActionRequest(host="torrent", action_type=action_type, parameters=parameters)
 
 
-@pytest.mark.parametrize("action_type", list(ActionType))
-def test_enabled_with_empty_allowlist_blocks_every_action(action_type):
+@pytest.mark.parametrize("action_type", [
+    ActionType.RESTART_VAST_SERVICE, ActionType.RESTART_DOCKER_SERVICE,
+    ActionType.GPU_RESET, ActionType.HOST_REBOOT,
+])
+def test_enabled_with_empty_allowlist_allows_safe_preflight(action_type):
     result = PolicyEngine().evaluate(
         _request_for_any_action(action_type),
         SAFE_PREFLIGHT,
         OperationsSettings(enabled=True),
         execution=True,
     )
-    assert result.decision == PolicyDecision.BLOCK
-    assert "ACTION_NOT_ALLOWED" in result.reasons
+    assert result.decision == PolicyDecision.ALLOW
 
 
 @pytest.mark.parametrize(
     ("action_type", "expected"),
     [
         (ActionType.RESTART_VAST_SERVICE, PolicyDecision.ALLOW),
-        (ActionType.RESTART_DOCKER_SERVICE, PolicyDecision.BLOCK),
-        (ActionType.GPU_RESET, PolicyDecision.BLOCK),
-        (ActionType.HOST_REBOOT, PolicyDecision.BLOCK),
+        (ActionType.RESTART_DOCKER_SERVICE, PolicyDecision.ALLOW),
+        (ActionType.GPU_RESET, PolicyDecision.ALLOW),
+        (ActionType.HOST_REBOOT, PolicyDecision.ALLOW),
     ],
 )
 def test_phase_one_allowlist_only_allows_vast_restart(action_type, expected):
@@ -118,8 +120,6 @@ def test_phase_one_allowlist_only_allows_vast_restart(action_type, expected):
         execution=True,
     )
     assert result.decision == expected
-    if expected == PolicyDecision.BLOCK:
-        assert "ACTION_NOT_ALLOWED" in result.reasons
 
 
 def test_unknown_allowed_action_is_a_config_error(tmp_path):
@@ -155,7 +155,7 @@ class SuccessfulVerifier:
         return VerificationResult(success=True, status="VERIFIED", summary="checked")
 
 
-def test_fresh_preflight_rechecks_allowlist_after_proposal(tmp_path):
+def test_allowed_actions_is_compatibility_metadata_not_approval_gate(tmp_path):
     database = Database(tmp_path / "db.sqlite")
     database.migrate()
     host = Host(name="torrent", address="192.0.2.1", ssh_user="agent")
@@ -180,12 +180,8 @@ def test_fresh_preflight_rechecks_allowlist_after_proposal(tmp_path):
     assert proposal.status == "PENDING"
     settings.allowed_actions.clear()
 
-    assert coordinator.approve(proposal.id, user_id=7, channel_id=9) == (
-        False,
-        "PREFLIGHT_BLOCKED",
-    )
+    assert coordinator.approve(proposal.id, user_id=7, channel_id=9)[0]
     assert preflight.calls == 2
-    assert remote.calls == []
+    assert len(remote.calls) == 1
     row = database.get_action_proposal(proposal.id)
-    assert row["status"] == "INVALIDATED"
-    assert row["invalidated_reason"] == "ACTION_NOT_ALLOWED"
+    assert row["status"] == "SUCCEEDED"

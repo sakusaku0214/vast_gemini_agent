@@ -61,8 +61,9 @@ class ExecutableQueryArgs(HostArgument):
 class CliArgvArgs(HostArgument):
     """An argv-only CLI request.  It is never interpreted as a shell command."""
 
-    executable: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
+    executable: str = Field(min_length=1, max_length=256)
     argv: list[str] = Field(default_factory=list, max_length=24)
+    requires_sudo: bool = False
     reason: str = Field(min_length=1, max_length=300)
 
     @field_validator("argv")
