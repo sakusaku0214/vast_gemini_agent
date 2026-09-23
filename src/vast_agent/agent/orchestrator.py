@@ -28,8 +28,7 @@ class InvestigationAgent:
         self.settings = settings
         self.registry = registry
 
-    def investigate(self, _host: str | None, question: str) -> str:
-        start = time.monotonic()
+    def investigate(\n        self, _host: str | None, question: str,\n        owner_id: str = "cli", channel_id: str = "cli",\n    ) -> str:\n        start = time.monotonic()
         tool_calls = 0
         llm_calls = 0
         cancellation = current_cancellation.get()
@@ -102,6 +101,8 @@ class InvestigationAgent:
                     call.name,
                     call.arguments,
                     cancellation,
+                    owner_id=str(owner_id),
+                    channel_id=str(channel_id),
                 )
                 tool_calls += 1
                 inputs.append({
