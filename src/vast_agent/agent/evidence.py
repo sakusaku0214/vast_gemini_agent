@@ -18,6 +18,8 @@ class EvidenceRecord(BaseModel):
     missing_evidence: list[str] = Field(default_factory=list)
     confidence_hint: Literal["low", "medium", "high"] = "medium"
     summary: str = ""
+    # Kept for application rendering/cache; summary is the only copy sent back to the model.
+    relevant_excerpt: str = Field(default="", max_length=4000, exclude=True)
 
 
 _UNAVAILABLE = {
@@ -38,10 +40,13 @@ def compact_evidence(source: str, output: dict[str, object], max_chars: int) -> 
         status = "evidence_missing"
     else:
         status = "available"
+    excerpt = _relevant_excerpt(payload, max_chars=max_chars)
     encoded = json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True)
     summary = encoded[:max_chars]
     if len(encoded) > max_chars:
         summary += "…[truncated]"
+    if excerpt and len(encoded) > max_chars:
+        summary = excerpt
     facts = payload if isinstance(payload, dict) and len(encoded) <= max_chars else {}
     signatures = facts.get("signatures", [])
     if not isinstance(signatures, list):
@@ -54,5 +59,45 @@ def compact_evidence(source: str, output: dict[str, object], max_chars: int) -> 
         source=source, status=status, facts=facts,
         signatures=[str(value) for value in signatures[:12]],
         missing_evidence=missing, confidence_hint="medium" if status == "available" else "low",
-        summary=summary,
+        summary=summary, relevant_excerpt=excerpt,
     )
+
+
+def _relevant_excerpt(payload: object, *, max_chars: int) -> str:
+    """Keep useful command evidence even when the surrounding payload is very large."""
+    if not isinstance(payload, dict) or payload.get("status") != "completed":
+        return ""
+    stdout = payload.get("stdout")
+    if not isinstance(stdout, str) or not stdout.strip():
+        return ""
+    executable = str(payload.get("executable", "")).rsplit("/", 1)[-1].casefold()
+    argv = [str(value).casefold() for value in payload.get("argv", [])]
+    lines = stdout.splitlines()
+    if executable == "crontab" and argv == ["-l"]:
+        # Comments remain relevant context, but omit empty padding.
+        selected = [line for line in lines if line.strip()]
+    elif executable == "nvidia-smi" and any("clock" in value for value in argv):
+        # nvidia-smi -q is section-oriented. Retain GPU boundaries and the clock
+        # sections rather than whichever bytes happen to occur first.
+        selected = []
+        keep_indent = None
+        for line in lines:
+            stripped = line.strip()
+            indent = len(line) - len(line.lstrip())
+            if stripped.startswith(("GPU ", "Product Name")):
+                selected.append(line)
+            if any(label in stripped for label in (
+                "Locked Clocks", "Max Clocks", "Applications Clocks", "Default Applications Clocks",
+            )):
+                selected.append(line)
+                keep_indent = indent
+                continue
+            if keep_indent is not None:
+                if stripped and indent > keep_indent:
+                    selected.append(line)
+                elif stripped:
+                    keep_indent = None
+    else:
+        selected = lines
+    excerpt = "\n".join(selected).strip()
+    return excerpt[:max_chars] + ("…[truncated]" if len(excerpt) > max_chars else "")

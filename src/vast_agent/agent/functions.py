@@ -85,6 +85,15 @@ class FunctionExecutor:
                 "system": observation.system.model_dump(mode="json"),
                 "services": observation.services, "signatures": observation.signatures,
             }}
+        # Adaptive argv output is already line/byte bounded and redacted by
+        # run_validated_read. Keep it structured so evidence compaction can select a
+        # relevant late section (rather than truncating the JSON prefix here).
+        if name in {"query_cli_help", "run_readonly_argv"}:
+            result = {
+                key: redact(value, self.secrets) if isinstance(value, str) else value
+                for key, value in result.items()
+            }
+            return {"untrusted_evidence": result}
         compact = redact(json.dumps(result, ensure_ascii=False, default=str), self.secrets)
         if len(compact) > self.max_chars:
             compact = compact[:self.max_chars] + "…[truncated]"

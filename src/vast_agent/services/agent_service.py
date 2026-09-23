@@ -76,6 +76,10 @@ class AgentService:
                     return ServiceReply(f"停止対象を指定してください。実行中: {candidates}")
                 target = int(running[0]["id"])
             return ServiceReply(f"Job #{target}: {self.jobs.cancel(target)}", target)
+        if self._requests_previous_evidence(folded):
+            retained = state.investigation_context.get("relevant_excerpt")
+            if isinstance(retained, str) and retained.strip():
+                return ServiceReply(self._render_evidence(retained))
         fleet_hosts = self._resolve_host_set(text, state)
         fleet_scope = self._is_explicit_fleet(folded) or (
             "全部" in folded and state.context_kind == "fleet"
@@ -216,7 +220,10 @@ class AgentService:
             work_result = await asyncio.to_thread(work)
             if decision.route == Route.AGENT and not isinstance(work_result, str):
                 investigation_result = work_result
-                summary = self._format_investigation(host.name, work_result)
+                summary = self._format_investigation(
+                    host.name, work_result,
+                    include_evidence=self._requests_evidence_render(folded),
+                )
             else:
                 summary = work_result
             summary = self._clean(summary)
@@ -262,8 +269,8 @@ class AgentService:
 
     @staticmethod
     def _compact_context(goal: str, hosts: tuple[str, ...], result) -> dict[str, object]:
-        """Persist conclusions only; raw logs and unbounded tool payloads are excluded."""
-        return {
+        """Persist conclusions and a small sanitized excerpt; never raw unbounded logs."""
+        context = {
             "previous_goal": goal[:500],
             "hosts": list(hosts)[:16],
             "conclusion": result.summary[:1200],
@@ -271,6 +278,15 @@ class AgentService:
             "missing_evidence": [str(item)[:300] for item in result.missing_evidence[:6]],
             "confidence": result.confidence,
         }
+        cached = getattr(result, "_context_evidence", {})
+        if isinstance(cached, dict):
+            excerpt = cached.get("relevant_excerpt")
+            paths = cached.get("executable_paths")
+            if isinstance(excerpt, str) and excerpt:
+                context["relevant_excerpt"] = excerpt[:4000]
+            if isinstance(paths, list):
+                context["executable_paths"] = [str(path)[:256] for path in paths[:4]]
+        return context
 
     async def _proposal_from_investigation(
         self, text, owner, channel, state, host, investigation,
@@ -308,7 +324,8 @@ class AgentService:
         if planner is None or self.actions is None:
             return ServiceReply("WRITE/Approval operation planning capability unavailable")
         investigation = await asyncio.to_thread(
-            self.agent.investigate, write_host.name, self._clean(text),
+            self._call_investigate, write_host.name, self._clean(text),
+            state.investigation_context,
         )
         plan = await asyncio.to_thread(
             planner, write_host.name, host_source, self._clean(text), investigation,
@@ -330,6 +347,45 @@ class AgentService:
                 or text.startswith("!cancel")
                 or bool(re.search(r"#\d+\s*止めて", text))
                 or bool(re.search(r"(?:今の調査|この調査|ジョブ)(?:を)?止めて", text)))
+
+    @staticmethod
+    def _requests_evidence_render(text: str) -> bool:
+        """Recognize a request to render acquired evidence in this reply/channel."""
+        return bool(re.search(
+            r"一覧|内容|見せて|表示|そのまま|コマンド結果|貼って|流して|"
+            r"(?:show|list|display|paste)(?:\s|$)", text, re.I,
+        ))
+
+    @classmethod
+    def _requests_previous_evidence(cls, text: str) -> bool:
+        """Identify a high-confidence request to re-render the immediately prior result.
+
+        Display vocabulary alone is deliberately insufficient: it commonly modifies a
+        new investigation goal (for example ``docker一覧見せて``). Reuse requires an
+        anaphoric reference, or an otherwise subject-free request to deliver the result
+        into the current conversation surface.
+        """
+        if not cls._requests_evidence_render(text):
+            return False
+        previous_reference = re.search(
+            r"(?:それ|その(?:一覧|内容|結果)|さっきの|前の|直前の|もう一回|もう一度)", text,
+        )
+        if previous_reference:
+            return True
+        return bool(
+            re.fullmatch(
+                r"\s*(?:一覧|内容|結果)(?:を)?(?:discord|ここ|このチャンネル)(?:へ|に)?"
+                r"(?:流して|流せない[?？]?|貼って|出して|表示して)\s*",
+                text,
+                re.I,
+            )
+        )
+
+    @staticmethod
+    def _render_evidence(evidence: str) -> str:
+        bounded = evidence[:4000]
+        suffix = "\n…[truncated]" if len(evidence) > len(bounded) else ""
+        return f"取得済みのREAD結果です。\n```text\n{bounded}{suffix}\n```"
 
     def _clean(self, value: str) -> str:
         return redact(value, self.secrets)
@@ -734,7 +790,7 @@ class AgentService:
                 f"Services: {services}\nSignatures: {signatures}")
 
     @staticmethod
-    def _format_investigation(host, result) -> str:
+    def _format_investigation(host, result, *, include_evidence: bool = False) -> str:
         signatures = "\n".join(f"• {item}" for item in result.signatures) or "• none"
         gaps = []
         for gap in getattr(result, "capability_gaps", []):
@@ -763,5 +819,9 @@ class AgentService:
                 f"能力: {gap.capability_id} ({state})\n理由: {gap.reason}\n確認:\n{evidence}{note}"
             )
         gap_text = "\n\nCapability gap:\n" + "\n\n".join(gaps) if gaps else ""
-        return (f"🔎 {host} — 調査結果\n\n要約:\n{result.summary}\n\n検出:\n{signatures}\n\n"
-                f"提案:\n{result.recommended_action}\n\n確度:\n{result.confidence}{gap_text}")
+        rendered = (f"🔎 {host} — 調査結果\n\n要約:\n{result.summary}\n\n検出:\n{signatures}\n\n"
+                    f"提案:\n{result.recommended_action}\n\n確度:\n{result.confidence}{gap_text}")
+        evidence = getattr(result, "_display_evidence", "")
+        if include_evidence and evidence:
+            rendered += "\n\n" + AgentService._render_evidence(evidence)
+        return rendered

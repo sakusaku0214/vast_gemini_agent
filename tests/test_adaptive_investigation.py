@@ -180,6 +180,25 @@ def test_prompt_distinguishes_current_health_from_historical_relevance():
     assert "specific evidence_type resolves an explicit uncertainty" in SYSTEM_PROMPT
 
 
+def test_long_gpu_clock_output_keeps_late_locked_clock_sections():
+    unrelated = "\n".join(f"Unrelated field {index}: value" for index in range(200))
+    output = {"untrusted_evidence": {
+        "status": "completed", "executable": "nvidia-smi", "argv": ["-q", "-d", "CLOCK"],
+        "stdout": (
+            f"GPU 00000000:01:00.0\n{unrelated}\n"
+            "    GPU Locked Clocks\n        Min : 1200 MHz\n        Max : 1800 MHz\n"
+            "    Max Clocks\n        Graphics : 2100 MHz\n"
+        ),
+    }}
+
+    record = compact_evidence("run_readonly_argv", output, 1800)
+
+    assert "GPU Locked Clocks" in record.summary
+    assert "Min : 1200 MHz" in record.relevant_excerpt
+    assert "Max Clocks" in record.relevant_excerpt
+    assert len(record.summary) <= 1800
+
+
 def test_answerable_after_first_read_does_not_call_more(tmp_path, host):
     agent, client, _ = make_agent(tmp_path, host, [
         call("query_nvme_health", {"host": host.name}), answer("SSD evidence is sufficient"),
