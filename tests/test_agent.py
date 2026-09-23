@@ -8,8 +8,9 @@ from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import GoogleInteractionsClient, ScriptedGeminiClient
 from vast_agent.agent.models import AgentResponse
 from vast_agent.agent.orchestrator import InvestigationAgent
+from vast_agent.approval import ProposalStore
 from vast_agent.config import GeminiSettings, HostRegistry
-from vast_agent.execution.argv import ArgvRejected, validate_read_argv
+from vast_agent.execution.argv import ArgvRejected, validate_read_argv, validate_write_argv
 from vast_agent.models.tool_result import ToolResult
 from vast_agent.storage.database import Database
 
@@ -28,7 +29,7 @@ def setup_agent(tmp_path, host, responses, result=None, **limits):
     db = Database(tmp_path / "agent.db"); db.migrate()
     registry = HostRegistry(hosts={host.name: host})
     remote = RecordingExecutor(result)
-    functions = FunctionExecutor(registry, remote)
+    functions = FunctionExecutor(registry, remote, ProposalStore(db))
     client = ScriptedGeminiClient(responses)
     settings = GeminiSettings(**limits)
     return InvestigationAgent(client, functions, db, settings, registry), client, db, functions, remote
@@ -93,7 +94,8 @@ def test_read_boundary_allows_normal_read_argv(argv):
 
 def test_function_executor_does_not_classify_request_semantics(tmp_path, host):
     remote = RecordingExecutor()
-    functions = FunctionExecutor(HostRegistry(hosts={host.name: host}), remote)
+    db = Database(tmp_path / "functions.db"); db.migrate()
+    functions = FunctionExecutor(HostRegistry(hosts={host.name: host}), remote, ProposalStore(db))
     result = functions.execute("read_host", {
         "host": "test-host",
         "argv": ["journalctl", "-k", "-b", "--no-pager", "-n", "20"],
@@ -102,10 +104,11 @@ def test_function_executor_does_not_classify_request_semantics(tmp_path, host):
     assert remote.calls[0][1] == ("journalctl", "-k", "-b", "--no-pager", "-n", "20")
 
 
-def test_disabled_host_never_reaches_remote(host):
+def test_disabled_host_never_reaches_remote(tmp_path, host):
     host.enabled = False
     remote = RecordingExecutor()
-    functions = FunctionExecutor(HostRegistry(hosts={host.name: host}), remote)
+    db = Database(tmp_path / "disabled.db"); db.migrate()
+    functions = FunctionExecutor(HostRegistry(hosts={host.name: host}), remote, ProposalStore(db))
     result = functions.execute("read_host", {"host": "test-host", "argv": ["true"]})
     assert result["error"] == "HOST_DISABLED"
     assert remote.calls == []
@@ -121,10 +124,11 @@ def test_secret_and_connection_details_are_not_sent(tmp_path, host):
     assert host.ssh_user not in sent
 
 
-def test_output_is_compacted_without_semantic_interpretation(host):
+def test_output_is_compacted_without_semantic_interpretation(tmp_path, host):
     text = "HEAD-" + ("x" * 3000) + "-TAIL"
     remote = RecordingExecutor(ToolResult(success=True, stdout=text, duration_ms=1))
-    functions = FunctionExecutor(HostRegistry(hosts={host.name: host}), remote, max_chars=120)
+    db = Database(tmp_path / "compact.db"); db.migrate()
+    functions = FunctionExecutor(HostRegistry(hosts={host.name: host}), remote, ProposalStore(db), max_chars=120)
     result = functions.execute("read_host", {"host": host.name, "argv": ["cat", "/proc/uptime"]})
     assert len(result["stdout"]) < len(text)
     assert result["stdout"].startswith("HEAD-")
@@ -197,3 +201,53 @@ def test_google_adapter_uses_interactions_steps(monkeypatch):
     assert captured["generation_config"] == {"thinking_level": "medium"}
     assert captured["store"] is False
     assert response.function_calls[0].call_id == "call-1"
+
+
+
+@pytest.mark.parametrize("argv", [
+    ["sudo", "-n", "systemctl", "restart", "vastai"],
+    ["sudo", "-n", "nvidia-smi", "--gpu-reset", "-i", "0"],
+    ["rm", "-f", "/tmp/example"],
+])
+def test_write_boundary_does_not_judge_operation_semantics(argv):
+    assert validate_write_argv(argv).argv == tuple(argv)
+
+
+def test_write_proposal_is_stored_but_never_executed(tmp_path, host):
+    call = AgentResponse(steps=[{
+        "type": "function_call",
+        "name": "propose_write",
+        "arguments": {
+            "host": host.name,
+            "argv": ["sudo", "-n", "systemctl", "restart", "vastai"],
+            "reason": "vastai service restart requested",
+            "timeout": 30,
+        },
+        "id": "w1",
+    }])
+    agent, client, db, _, remote = setup_agent(
+        tmp_path,
+        host,
+        [call, AgentResponse(output_text="Proposalを作成しました。承認してください。")],
+    )
+
+    answer = agent.investigate(
+        None,
+        "vastai再起動して",
+        owner_id="10",
+        channel_id="20",
+    )
+
+    assert "承認" in answer
+    assert remote.calls == []
+    proposal = db.get_proposal(1)
+    assert proposal["status"] == "PENDING"
+    assert proposal["owner_id"] == "10"
+    assert proposal["channel_id"] == "20"
+    assert json.loads(proposal["argv_json"]) == [
+        "sudo", "-n", "systemctl", "restart", "vastai",
+    ]
+    second_inputs = client.requests[1]["inputs"]
+    result = next(item for item in second_inputs if item.get("type") == "function_result")
+    payload = json.loads(result["result"][0]["text"])
+    assert payload["proposal_id"] == 1
