@@ -1,1 +1,1 @@
-"""Bounded, read-only investigation agent."""
+"""Bounded investigation phase for the approval-gated operations agent."""

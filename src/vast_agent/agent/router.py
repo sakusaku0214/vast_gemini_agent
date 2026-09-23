@@ -3,6 +3,7 @@ from __future__ import annotations
 from vast_agent.agent.models import IntentDecision, Route
 from vast_agent.config import HostRegistry
 
+# Deterministic zero-token fast paths only; never a capability or reasoning boundary.
 SCOPES = {
     "gpu温度": "gpu", "gpu状態": "gpu", "gpuの状態": "gpu", "gpu見て": "gpu",
     "pci状態": "pci", "pciの状態": "pci", "pci見て": "pci",
@@ -11,7 +12,7 @@ SCOPES = {
     "ディスク": "system", "system状態": "system", "システム状態": "system",
     "vast状態": "vast", "vastの状態": "vast", "vast見て": "vast",
 }
-WRITE_WORDS = ("再起動", "restart", "reset", "リセット", "停止", "止めて", "stop", "reboot", "shutdown")
+WRITE_WORDS = ("再起動", "restart", "reset", "リセット", "停止", "止めて", "stop", "reboot", "shutdown", "クロック制限", "絞って", "clock lock")
 ADVICE_WORDS = ("すべき", "必要", "候補", "した方が", "でしょう", "ですか", "？", "?")
 AGENT_WORDS = ("おかしく", "原因", "調べ", "なぜ", "なんで", "前にも", "過去", "消え")
 

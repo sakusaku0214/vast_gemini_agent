@@ -4,10 +4,8 @@ import json
 
 import pytest
 
-from vast_agent.actions.capability_bridge import request_for_gap
 from vast_agent.actions.package_catalog import CAPABILITY_REGISTRY
 from vast_agent.agent.host_read import HOST_READ_CAPABILITIES, discover, execute_diagnostic
-from vast_agent.agent.models import CapabilityGap
 from vast_agent.execution.base import FakeExecutor
 from vast_agent.models.host import Capabilities
 from vast_agent.models.tool_result import ErrorCode, ToolResult
@@ -125,18 +123,16 @@ def test_malformed_docker_rows_warn_without_leaking_unrequested_fields(host):
     assert remote.calls == ["query_docker_diagnostics:service", "query_docker_diagnostics:containers"]
 
 
-def test_registry_no_acquisition_read_only_discovery_and_no_proposal(host):
-    definitions = {item.capability_id: item for item in CAPABILITY_REGISTRY.definitions}
-    for capability_id, backend in (("gpu_diagnostics", "query_gpu_diagnostics"),
-                                   ("docker_diagnostics", "query_docker_diagnostics")):
-        definition = definitions[capability_id]
-        assert definition.acquisition is None and definition.read_backend.tool_name == backend
-        assert HOST_READ_CAPABILITIES[backend].risk_class == "READ_ONLY"
-        gap = CapabilityGap(capability_id=capability_id, status="missing",
-            software_status="missing", reason="requested", confidence="high")
-        assert request_for_gap(host.name, gap, consent=True) is None
-    exposed = {item["capability_id"] for item in discover(host)["high_level_capabilities"]}
-    assert {"gpu_diagnostics", "docker_diagnostics"} <= exposed
+def test_read_apis_do_not_need_acquisition_catalog_entries(host):
+    definitions = {item.capability_id for item in CAPABILITY_REGISTRY.definitions}
+    assert "gpu_diagnostics" not in definitions
+    assert "docker_diagnostics" not in definitions
+    assert HOST_READ_CAPABILITIES["query_gpu_diagnostics"].risk_class == "READ_ONLY"
+    assert HOST_READ_CAPABILITIES["query_docker_diagnostics"].risk_class == "READ_ONLY"
+    discovery = discover(host)
+    exposed = {item["name"] for item in discovery["capabilities"]}
+    assert {"query_gpu_diagnostics", "query_docker_diagnostics"} <= exposed
+    assert "not an intelligence boundary" in discovery["discovery_note"].casefold()
     assert TOOLS["get_pci_status"].command == ("lspci", "-Dnnk")
 
 

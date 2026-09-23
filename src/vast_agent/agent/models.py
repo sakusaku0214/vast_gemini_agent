@@ -31,6 +31,14 @@ class ActionIntentCandidate(BaseModel):
     parameters: dict[str, object] = Field(default_factory=dict)
 
 
+class HostOperationIntentCandidate(BaseModel):
+    """Routing-only semantic result; it carries no host, target, argv, or authority."""
+
+    model_config = ConfigDict(extra="forbid")
+    intent: Literal["READ", "WRITE", "ADVICE", "GENERAL", "UNCERTAIN"]
+    reason: str = Field(max_length=200)
+
+
 class InspectHostArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     host: str
@@ -65,6 +73,21 @@ class PackageQueryArgs(HostArgument):
 
 class ExecutableQueryArgs(HostArgument):
     executable_name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
+
+
+class CliArgvArgs(HostArgument):
+    """An argv-only CLI request.  It is never interpreted as a shell command."""
+
+    executable: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
+    argv: list[str] = Field(default_factory=list, max_length=24)
+    reason: str = Field(min_length=1, max_length=300)
+
+    @field_validator("argv")
+    @classmethod
+    def bounded_arguments(cls, value: list[str]) -> list[str]:
+        if any(not argument or len(argument) > 256 for argument in value):
+            raise ValueError("argv elements must be non-empty and at most 256 characters")
+        return value
 
 
 class ServiceQueryArgs(HostArgument):

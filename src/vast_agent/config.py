@@ -70,6 +70,8 @@ class OperationsSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
+    # Upgrade-safe opt-in for generic approved argv.
+    generic_operations_enabled: bool = False
     # Keep configuration independent of actions.models to avoid a circular import.
     allowed_actions: list[AllowedAction] = Field(default_factory=list)
     approval_ttl_seconds: int = Field(default=600, ge=60, le=3600)
@@ -182,7 +184,7 @@ def initialize_config(paths: RuntimePaths, examples: Path | None = None) -> None
     paths.create()
     defaults = {
         paths.hosts_file: "hosts: {}\n",
-        paths.agent_file: "ssh:\n  connect_timeout: 10\n  server_alive_interval: 5\n  server_alive_count_max: 2\ngemini:\n  model: gemini-3.8-flash\n  api_version: v1\n  default_thinking_level: low\n  investigate_thinking_level: medium\n  allow_high_thinking: true\n  store_interactions: false\ndiscord:\n  enabled: true\njobs:\n  max_parallel_hosts: 3\n  max_recent_jobs: 20\nconversation:\n  remember_last_host: true\nexternal_tools:\n  default_weather_location: null\n  request_timeout_seconds: 8\n  max_response_bytes: 262144\n  search_provider: disabled\noperations:\n  enabled: false\n  allowed_actions: []\n  approval_ttl_seconds: 600\n  action_timeout_seconds: 60\n  reboot_recovery_timeout_seconds: 300\n  reboot_poll_seconds: 10\n  enable_vms_script: null\n",
+        paths.agent_file: "ssh:\n  connect_timeout: 10\n  server_alive_interval: 5\n  server_alive_count_max: 2\ngemini:\n  model: gemini-3.8-flash\n  api_version: v1\n  default_thinking_level: low\n  investigate_thinking_level: medium\n  allow_high_thinking: true\n  store_interactions: false\ndiscord:\n  enabled: true\njobs:\n  max_parallel_hosts: 3\n  max_recent_jobs: 20\nconversation:\n  remember_last_host: true\nexternal_tools:\n  default_weather_location: null\n  request_timeout_seconds: 8\n  max_response_bytes: 262144\n  search_provider: disabled\noperations:\n  enabled: false\n  allowed_actions: []\n  generic_operations_enabled: false\n  approval_ttl_seconds: 600\n  action_timeout_seconds: 60\n  reboot_recovery_timeout_seconds: 300\n  reboot_poll_seconds: 10\n  enable_vms_script: null\n",
     }
     for target, content in defaults.items():
         if not target.exists():

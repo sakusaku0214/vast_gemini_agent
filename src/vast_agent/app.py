@@ -50,7 +50,7 @@ from vast_agent.trust import trust_host
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="vast-agent", description="Vast Gemini Agent v2 (read-only)")
+    root = argparse.ArgumentParser(prog="vast-agent", description="Vast Gemini approval-gated operations agent")
     root.add_argument("--runtime", type=Path, help="Override runtime root (testing/advanced use)")
     sub = root.add_subparsers(dest="command", required=True)
     for name in ("install", "doctor", "config", "hosts"):
