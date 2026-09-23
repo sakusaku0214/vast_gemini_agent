@@ -6,6 +6,7 @@ import threading
 import time
 from types import SimpleNamespace
 
+from vast_agent.approval import ProposalStore
 from vast_agent.config import HostRegistry
 from vast_agent.conversation.state import ConversationStore
 from vast_agent.discord_app.auth import DiscordGuard
@@ -14,7 +15,8 @@ from vast_agent.discord_app.gateway import DiscordGateway
 from vast_agent.execution.ssh import SSHExecutor
 from vast_agent.jobs import CancellationToken, JobManager, JobStatus
 from vast_agent.logging_utils import SecretRedactingFormatter
-from vast_agent.models.tool_result import ErrorCode
+from vast_agent.models.host import Host
+from vast_agent.models.tool_result import ErrorCode, ToolResult
 from vast_agent.paths import RuntimePaths
 from vast_agent.runtime import RuntimeManager
 from vast_agent.services.agent_service import AgentService, ServiceReply
@@ -125,7 +127,7 @@ def test_natural_language_is_passed_to_agent_without_routing(tmp_path):
     seen = {}
 
     class Agent:
-        def investigate(self, host, question):
+        def investigate(self, host, question, **kwargs):
             seen["host"] = host
             seen["question"] = question
             return "Gemini answer"
@@ -148,7 +150,7 @@ def test_host_words_do_not_trigger_code_side_semantics(tmp_path):
     seen = []
 
     class Agent:
-        def investigate(self, host, question):
+        def investigate(self, host, question, **kwargs):
             seen.append(question)
             return "ok"
 
@@ -217,7 +219,7 @@ def test_secret_redaction_at_service_database_and_logging(tmp_path):
     seen = {}
 
     class Agent:
-        def investigate(self, host, question):
+        def investigate(self, host, question, **kwargs):
             seen["question"] = question
             return f"model echoed {secret}"
 
@@ -246,3 +248,117 @@ def test_secret_redaction_at_service_database_and_logging(tmp_path):
             "test", logging.ERROR, __file__, 1, f"failed {secret}", (), sys.exc_info()
         )
     assert secret not in formatter.format(record)
+
+
+
+class WriteRecordingExecutor:
+    def __init__(self, result=None):
+        self.result = result or ToolResult(
+            success=True, exit_code=0, stdout="restarted", duration_ms=1,
+        )
+        self.calls = []
+
+    def execute(self, host, command, timeout, cancellation=None):
+        self.calls.append((host.name, tuple(command), timeout, cancellation))
+        return self.result
+
+
+def make_write_service(tmp_path, owner="10", channel="20"):
+    db = Database(tmp_path / "db")
+    db.migrate()
+    host = Host(name="torrent", address="192.0.2.10", ssh_user="tester")
+    registry = HostRegistry(hosts={host.name: host})
+    executor = WriteRecordingExecutor()
+    proposals = ProposalStore(db)
+    service = AgentService(
+        registry,
+        object(),
+        executor,
+        JobManager(db),
+        ConversationStore(db),
+        agent=None,
+        proposals=proposals,
+    )
+    proposal = proposals.create(
+        owner_id=owner,
+        channel_id=channel,
+        host=host.name,
+        argv=("sudo", "-n", "systemctl", "restart", "vastai"),
+        reason="restart requested",
+        timeout=30,
+    )
+    return service, executor, proposals, proposal
+
+
+def test_write_is_not_executed_before_owner_approval(tmp_path):
+    service, executor, proposals, proposal = make_write_service(tmp_path)
+    assert executor.calls == []
+    assert proposals.get(proposal.id).status == "PENDING"
+
+
+def test_owner_approval_executes_exact_stored_argv_once(tmp_path):
+    service, executor, proposals, proposal = make_write_service(tmp_path)
+
+    first = asyncio.run(service.handle_question(f"承認 #{proposal.id}", 10, 20))
+    second = asyncio.run(service.handle_question(f"承認 #{proposal.id}", 10, 20))
+
+    assert "EXECUTED" in first.text
+    assert len(executor.calls) == 1
+    assert executor.calls[0][1] == (
+        "sudo", "-n", "systemctl", "restart", "vastai",
+    )
+    assert proposals.get(proposal.id).status == "EXECUTED"
+    assert "承認待ちではありません" in second.text
+
+
+def test_wrong_owner_cannot_approve_proposal(tmp_path):
+    service, executor, proposals, proposal = make_write_service(tmp_path)
+
+    reply = asyncio.run(service.handle_question(f"承認 #{proposal.id}", 11, 20))
+
+    assert executor.calls == []
+    assert proposals.get(proposal.id).status == "PENDING"
+    assert "承認できません" in reply.text
+
+
+def test_bare_approval_works_only_with_one_pending_proposal(tmp_path):
+    service, executor, proposals, proposal = make_write_service(tmp_path)
+
+    reply = asyncio.run(service.handle_question("承認", 10, 20))
+
+    assert "EXECUTED" in reply.text
+    assert len(executor.calls) == 1
+    assert proposals.get(proposal.id).status == "EXECUTED"
+
+
+def test_bare_approval_requires_id_when_multiple_pending(tmp_path):
+    service, executor, proposals, _ = make_write_service(tmp_path)
+    proposals.create(
+        owner_id="10",
+        channel_id="20",
+        host="torrent",
+        argv=("sudo", "-n", "systemctl", "restart", "docker"),
+        reason="second proposal",
+        timeout=30,
+    )
+
+    reply = asyncio.run(service.handle_question("承認", 10, 20))
+
+    assert executor.calls == []
+    assert "承認対象を指定" in reply.text
+    assert "#1" in reply.text and "#2" in reply.text
+
+
+def test_failed_write_is_single_use(tmp_path):
+    service, executor, proposals, proposal = make_write_service(tmp_path)
+    executor.result = ToolResult(
+        success=False, exit_code=1, stderr="failed", duration_ms=1,
+    )
+
+    first = asyncio.run(service.handle_question(f"承認 #{proposal.id}", 10, 20))
+    second = asyncio.run(service.handle_question(f"承認 #{proposal.id}", 10, 20))
+
+    assert "FAILED" in first.text
+    assert len(executor.calls) == 1
+    assert proposals.get(proposal.id).status == "FAILED"
+    assert "承認待ちではありません" in second.text
