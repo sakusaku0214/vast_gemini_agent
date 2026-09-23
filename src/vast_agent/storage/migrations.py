@@ -48,4 +48,19 @@ MIGRATIONS: tuple[str, ...] = (
       PRIMARY KEY(owner_id, channel_id)
     );
     """,
+    """
+    CREATE TABLE write_proposals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      host TEXT NOT NULL,
+      argv_json TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX write_proposals_owner_status
+      ON write_proposals(owner_id, channel_id, status, id);
+    """,
 )
