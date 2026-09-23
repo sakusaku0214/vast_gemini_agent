@@ -119,6 +119,12 @@ class InvestigationAgent:
                     })
                     break
 
+                log.info(
+                    "Agent tool call #%s function=%s arguments=%s",
+                    tool_calls + 1,
+                    call.name,
+                    json.dumps(call.arguments, ensure_ascii=False, default=str),
+                )
                 output = self.functions.execute(
                     call.name,
                     call.arguments,
@@ -127,6 +133,15 @@ class InvestigationAgent:
                     channel_id=str(channel_id),
                 )
                 tool_calls += 1
+                log.info(
+                    "Agent tool result #%s function=%s host=%s success=%s exit=%s error=%s",
+                    tool_calls,
+                    call.name,
+                    output.get("host"),
+                    output.get("success"),
+                    output.get("exit_code"),
+                    output.get("error") or output.get("error_code"),
+                )
 
                 round_items.append({
                     "type": "function_result",
@@ -142,6 +157,17 @@ class InvestigationAgent:
             recent_rounds.append((round_items, round_ledger))
             self._trim_rounds(recent_rounds, archived_ledger)
 
+        log.warning(
+            "Agent budget exhausted llm_calls=%s tool_calls=%s elapsed=%.1fs "
+            "limits(llm=%s tools=%s steps=%s wall=%ss)",
+            llm_calls,
+            tool_calls,
+            time.monotonic() - start,
+            self.settings.max_llm_calls,
+            self.settings.max_tool_calls,
+            self.settings.max_agent_steps,
+            self.settings.agent_wall_time_seconds,
+        )
         return "操作上限に達しました。得られた証拠だけでは回答を確定できませんでした。"
 
     def _trim_rounds(
