@@ -67,6 +67,21 @@ class ExecutableQueryArgs(HostArgument):
     executable_name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
 
 
+class CliArgvArgs(HostArgument):
+    """An argv-only CLI request.  It is never interpreted as a shell command."""
+
+    executable: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
+    argv: list[str] = Field(default_factory=list, max_length=24)
+    reason: str = Field(min_length=1, max_length=300)
+
+    @field_validator("argv")
+    @classmethod
+    def bounded_arguments(cls, value: list[str]) -> list[str]:
+        if any(not argument or len(argument) > 256 for argument in value):
+            raise ValueError("argv elements must be non-empty and at most 256 characters")
+        return value
+
+
 class ServiceQueryArgs(HostArgument):
     service_name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.@-]*$")
 

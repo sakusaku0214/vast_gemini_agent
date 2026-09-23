@@ -270,15 +270,24 @@ class AgentService:
                 f", package={state.current_state}, candidate={state.package_candidate or 'none'}, "
                 f"package-manager={package_manager_state(state.package_manager_busy)}"
             )
-        return (f"⚠️ Proposal #{proposal.id}\nHost: {proposal.host}\n"
+        target = getattr(proposal.parameters, "service", None) or getattr(
+            proposal.parameters, "container", None,
+        ) or (f"GPU {proposal.parameters.gpu_index}" if hasattr(proposal.parameters, "gpu_index")
+              else getattr(proposal.parameters, "package_name", proposal.action_type))
+        return (f"⚠️ Operation Proposal #{proposal.id}\nHost: {proposal.host}\n"
+                f"Host source: current message\n"
                 f"Action: {proposal.action_type}\nRisk: {proposal.risk_class}\n"
+                f"Sudo: required\nTarget: {target}\n"
                 f"{package}{reason}"
                 f"Expires: {proposal.expires_at.isoformat()}\nPolicy: {policy}"
                 f"{(' (' + ', '.join(reasons) + ')') if reasons else ''}\n"
                 f"Preflight: SSH={'OK' if state.ssh_reachable else 'BLOCK'}, "
                 f"sudo={'OK' if state.sudo_available else 'BLOCK'}, "
                 f"target={state.current_state}, VM={'running' if state.running_vm else 'none'}, "
-                f"workload={'active' if state.active_workload else 'none'}{package_preflight}")
+                f"workload={'active' if state.active_workload else 'none'}{package_preflight}\n"
+                "Expected effect: perform only the displayed typed action\n"
+                "Verification plan: re-read the action-specific target state\n"
+                "Rollback available: no (a rollback requires a new Proposal)")
 
     def _resolve_host(self, text: str, routed: str | None, state: ConversationState):
         folded = text.casefold(); matches = []

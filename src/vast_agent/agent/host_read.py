@@ -10,7 +10,9 @@ from typing import Any, Final
 from pydantic import BaseModel
 
 from vast_agent.actions.package_catalog import CAPABILITY_REGISTRY
+from vast_agent.agent.generic_read import run_validated_read
 from vast_agent.agent.models import (
+    CliArgvArgs,
     CollectEvidenceArgs,
     ExecutableQueryArgs,
     HostArgument,
@@ -55,6 +57,8 @@ HOST_READ_CAPABILITIES: Final[dict[str, HostReadCapability]] = {
         HostReadCapability("get_recent_incidents", "Read compact incident summaries when history is relevant.", "history", RecentIncidentsArgs, "legacy"),
         HostReadCapability("query_package", "Check whether one validated Debian package is installed.", "packages", PackageQueryArgs, "generic"),
         HostReadCapability("query_executable", "Resolve one validated executable name without exposing PATH.", "executables", ExecutableQueryArgs, "generic"),
+        HostReadCapability("query_cli_help", "Read bounded, untrusted CLI help using executable plus argv; no shell.", "discovery", CliArgvArgs, "generic"),
+        HostReadCapability("run_readonly_argv", "Run a code-validated READ argv for an installed executable; mutations become Proposal candidates.", "discovery", CliArgvArgs, "generic"),
         HostReadCapability("query_service", "Read one validated systemd service state.", "services", ServiceQueryArgs, "generic"),
         HostReadCapability("inspect_network", "Read bounded link, address, or route information.", "network", NetworkInspectionArgs, "generic"),
         HostReadCapability("inspect_interface", "Read bounded details for one validated network interface.", "network", InterfaceInspectionArgs, "generic"),
@@ -275,6 +279,11 @@ def _network_summary(part: str, rows: list[object]) -> list[object]:
 
 
 def execute_generic(name: str, args: BaseModel, host: Host, remote: Executor) -> dict[str, object]:
+    if name in {"query_cli_help", "run_readonly_argv"}:
+        return run_validated_read(
+            remote, host, args.executable, args.argv,  # type: ignore[attr-defined]
+            help_only=name == "query_cli_help",
+        )
     if name == "query_traffic_history":
         return _traffic_history(args, host, remote)
     if name == "query_nvme_health":
