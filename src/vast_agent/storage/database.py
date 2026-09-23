@@ -255,6 +255,27 @@ class Database:
             )
 
 
+    def reject_proposal(
+        self,
+        proposal_id: int,
+        owner_id: str,
+        channel_id: str,
+    ) -> bool:
+        self.migrate()
+        with self.connect() as db:
+            cursor = db.execute(
+                "UPDATE write_proposals SET status='REJECTED',updated_at=? "
+                "WHERE id=? AND owner_id=? AND channel_id=? AND status='PENDING'",
+                (
+                    datetime.now(UTC).isoformat(),
+                    proposal_id,
+                    owner_id,
+                    channel_id,
+                ),
+            )
+            return cursor.rowcount == 1
+
+
     def claim_proposal(
         self,
         proposal_id: int,
