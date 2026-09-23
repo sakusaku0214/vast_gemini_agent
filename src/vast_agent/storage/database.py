@@ -174,3 +174,54 @@ class Database:
                 "last_scope=excluded.last_scope,updated_at=excluded.updated_at",
                 (owner, channel, host, job_id, scope, datetime.now(UTC).isoformat()),
             )
+
+
+    def create_proposal(
+        self,
+        owner_id: str,
+        channel_id: str,
+        host: str,
+        argv: list[str],
+        reason: str,
+        created: datetime,
+    ) -> int:
+        self.migrate()
+        now = created.isoformat()
+        with self.connect() as db:
+            cursor = db.execute(
+                "INSERT INTO write_proposals("
+                "owner_id,channel_id,host,argv_json,reason,status,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,'PENDING',?,?)",
+                (owner_id, channel_id, host, json.dumps(argv, ensure_ascii=False), reason, now, now),
+            )
+            return int(cursor.lastrowid)
+
+    def get_proposal(self, proposal_id: int) -> dict[str, object] | None:
+        self.migrate()
+        with self.connect() as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT * FROM write_proposals WHERE id=?",
+                (proposal_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def pending_proposals(self, owner_id: str, channel_id: str) -> list[dict[str, object]]:
+        self.migrate()
+        with self.connect() as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                "SELECT * FROM write_proposals "
+                "WHERE owner_id=? AND channel_id=? AND status='PENDING' "
+                "ORDER BY id DESC",
+                (owner_id, channel_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_proposal_status(self, proposal_id: int, status: str) -> None:
+        self.migrate()
+        with self.connect() as db:
+            db.execute(
+                "UPDATE write_proposals SET status=?,updated_at=? WHERE id=?",
+                (status, datetime.now(UTC).isoformat(), proposal_id),
+            )
