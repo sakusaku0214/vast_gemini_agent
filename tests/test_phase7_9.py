@@ -478,3 +478,41 @@ def test_previous_successful_turn_is_passed_to_agent(tmp_path):
         "request": "TaichiのGPU情報教えて",
         "answer": "ok",
     }
+
+
+
+def test_failed_agent_turn_is_not_reused_as_context(tmp_path):
+    db = Database(tmp_path / "db")
+    manager = JobManager(db)
+    store = ConversationStore(db)
+    seen = []
+
+    class Agent:
+        def __init__(self):
+            self.calls = 0
+
+        def investigate(self, host, question, **kwargs):
+            self.calls += 1
+            seen.append(kwargs.get("previous_turn"))
+            if self.calls == 1:
+                return "操作上限に達しました。得られた証拠だけでは回答を確定できませんでした。"
+            return "ok"
+
+    service = AgentService(
+        HostRegistry(hosts={}),
+        object(),
+        object(),
+        manager,
+        store,
+        Agent(),
+    )
+
+    first = asyncio.run(service.handle_question("もう一台はVMかな？", 1, 2))
+    first_row = db.get_job(first.job_id)
+    second = asyncio.run(service.handle_question("TaichiのGPU情報教えて", 1, 2))
+
+    assert first_row["status"] == "FAILED"
+    assert first_row["error_code"] == "AGENT_LIMIT"
+    assert seen[0] is None
+    assert seen[1] is None
+    assert "ok" in second.text
