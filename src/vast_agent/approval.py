@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from vast_agent.storage.database import Database
+if TYPE_CHECKING:
+    from vast_agent.storage.database import Database
 
 
 @dataclass(frozen=True)
