@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 
 from vast_agent.actions.capability_backends import CapabilityBackendResolver
@@ -8,6 +9,7 @@ from vast_agent.actions.models import ActionRequest, ActionType, PackageInstallP
 from vast_agent.actions.package_catalog import ServiceRequirement, capability_definition
 from vast_agent.agent.investigation_session import InvestigationSession
 from vast_agent.agent.models import CapabilityGap
+from vast_agent.agent.router import explicit_write_intent
 
 
 class AcquisitionIntent(StrEnum):
@@ -27,7 +29,13 @@ def acquisition_intent(text: str) -> AcquisitionIntent:
     folded = text.casefold()
     if any(phrase in folded for phrase in _CONDITIONAL_ACQUISITION):
         return AcquisitionIntent.PROPOSE_IF_NEEDED
-    if any(word in folded for word in ("入れて", "install", "インストール")):
+    # Keep acquisition consent aligned with the application-owned mutation classifier.
+    # In particular, nouns in state questions (``インストール済み？`` / ``installed?``)
+    # are not consent to mutate a host.
+    acquisition_language = bool(re.search(
+        r"(?:入れて|インストールして|導入して|\binstall\b)", folded,
+    ))
+    if acquisition_language and explicit_write_intent(text):
         return AcquisitionIntent.EXPLICIT_INSTALL
     return AcquisitionIntent.READ_ONLY
 

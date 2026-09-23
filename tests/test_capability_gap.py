@@ -50,6 +50,10 @@ def grounded_gap(**updates) -> CapabilityGap:
     ("magの昨日の通信量見て", AcquisitionIntent.READ_ONLY),
     ("magの昨日の通信量見たい。必要なら入れて", AcquisitionIntent.PROPOSE_IF_NEEDED),
     ("magにvnstat入れて", AcquisitionIntent.EXPLICIT_INSTALL),
+    ("vnstatインストール済みよ？", AcquisitionIntent.READ_ONLY),
+    ("全台にvnstatインストール済みよ？", AcquisitionIntent.READ_ONLY),
+    ("vnstatをインストールして", AcquisitionIntent.EXPLICIT_INSTALL),
+    ("vnstatを導入して", AcquisitionIntent.EXPLICIT_INSTALL),
 ])
 def test_acquisition_intent_is_separate_from_goal(text, expected):
     assert acquisition_intent(text) == expected

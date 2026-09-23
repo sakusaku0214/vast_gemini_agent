@@ -85,7 +85,9 @@ class TrafficFunctions:
         self.calls.append((name, arguments, target_host))
         value = self.totals[target_host]
         if value is None:
-            return {"untrusted_evidence": {"status": "error"}}
+            return {"untrusted_evidence": {
+                "status": "error", "failure_kind": "executable_discovery_failed",
+            }}
         return {"untrusted_evidence": {
             "status": "available", "period": "yesterday", "interface": "eth0",
             "rx_bytes": value // 4, "tx_bytes": value - value // 4,
@@ -194,6 +196,59 @@ def test_fleet_vnstat_is_ranked_and_partial_failure_is_preserved(tmp_path):
     assert all(call[0] == "query_traffic_history" for call in agent.functions.calls)
     assert all(call[1]["period"] == "yesterday" for call in agent.functions.calls)
     assert service.conversations.get(1, 2).last_host is None
+
+
+def test_fleet_today_traffic_honors_period_heading_and_sort_order(tmp_path):
+    agent = FleetAgent({"Garage-X570": 10, "garage-h12ssl-nt": 20})
+    service = make_service(tmp_path, agent)
+
+    reply = asyncio.run(service.handle_question(
+        "全台の今日の通信量をランキング付けて一覧にして", 1, 2,
+    ))
+
+    assert "今日の通信量" in reply.text
+    assert reply.text.index("garage-h12ssl-nt") < reply.text.index("Garage-X570")
+    assert all(call[1]["period"] == "today" for call in agent.functions.calls)
+
+
+def test_fleet_traffic_failure_shows_bounded_reason(tmp_path):
+    agent = FleetAgent({"Garage-X570": 1, "garage-h12ssl-nt": None})
+    service = make_service(tmp_path, agent)
+    reply = asyncio.run(service.handle_question("全台の今日の通信量見て", 1, 2))
+    assert "garage-h12ssl-nt: executable_discovery_failed" in reply.text
+
+
+def test_installed_questions_are_reads_in_single_and_fleet_context(tmp_path):
+    agent = ContextAgent()
+    service = make_service(tmp_path, agent)
+    asyncio.run(service.handle_question("x570のvnstatみてみて", 1, 2))
+
+    single = asyncio.run(service.handle_question("vnstatインストール済みよ？", 1, 2))
+    fleet = asyncio.run(service.handle_question("全台にvnstatインストール済みよ？", 3, 4))
+
+    assert single.job_id is not None and agent.calls[-3][0] == "Garage-X570"
+    assert fleet.job_id is not None
+    assert {host for host, _ in agent.calls[-2:]} == {"Garage-X570", "garage-h12ssl-nt"}
+    assert "WRITE対象" not in single.text + fleet.text
+
+
+def test_traffic_value_followup_inherits_single_host_investigation(tmp_path):
+    agent = ContextAgent()
+    service = make_service(tmp_path, agent)
+    asyncio.run(service.handle_question("x570のvnstatみてみて", 1, 2))
+    reply = asyncio.run(service.handle_question("トラフィック量の値を教えて", 1, 2))
+    assert reply.job_id is not None
+    assert agent.calls[-1] == ("Garage-X570", "トラフィック量の値を教えて")
+    assert reply.text != "general"
+
+
+def test_fleet_read_followup_reuses_fleet_scope(tmp_path):
+    agent = FleetAgent({"Garage-X570": 10, "garage-h12ssl-nt": 20})
+    service = make_service(tmp_path, agent)
+    asyncio.run(service.handle_question("全台の今日の通信量見て", 1, 2))
+    reply = asyncio.run(service.handle_question("エラーの原因見て", 1, 2))
+    assert reply.job_id is not None
+    assert {host for host, _ in agent.calls[-2:]} == {"Garage-X570", "garage-h12ssl-nt"}
 
 
 def test_fleet_result_cannot_authorize_batch_write(tmp_path):

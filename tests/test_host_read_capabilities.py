@@ -112,7 +112,7 @@ def test_unavailable_command_requires_bounded_path_discovery_before_absence(tmp_
     })
     result = evidence(functions.execute("query_executable", {"host": host.name, "executable_name": "vnstat"}, host.name))
     assert result == {"executable": "vnstat", "exists": False, "path": None}
-    assert remote.calls == ["query_executable", *["query_executable:candidate"] * 4]
+    assert remote.calls == ["query_executable", *["query_executable:candidate"] * 5]
 
 
 def test_capability_discovery_comes_from_registry_without_remote_execution(tmp_path, host):

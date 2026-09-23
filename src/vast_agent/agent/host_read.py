@@ -101,6 +101,33 @@ def _json(result: ToolResult) -> Any:
         return {"error": "PARSER_FAILED"}
 
 
+def _resolve_executable(
+    remote: Executor, host: Host, executable: str, *, tool_name: str = "query_executable",
+) -> tuple[str | None, ToolResult]:
+    """Resolve an executable with a bounded, shell-free set of probes.
+
+    This is shared by explicit discovery and deterministic readers so a fast path does
+    not become a separate capability silo.  Candidate locations are code-owned, while
+    each host is probed independently.
+    """
+    result = _run(remote, tool_name, host, ("which", "--", executable))
+    path = result.stdout.splitlines()[0].strip() if result.success and result.stdout.strip() else None
+    if path and (not path.startswith("/") or len(path) > 256 or any(char.isspace() for char in path)):
+        path = None
+    if path is None:
+        candidates = (
+            f"/home/{host.ssh_user}/.local/bin/{executable}",
+            f"/home/{host.ssh_user}/bin/{executable}",
+            f"/usr/local/bin/{executable}", f"/usr/bin/{executable}",
+            f"/snap/bin/{executable}",
+        )
+        for candidate in candidates:
+            probe = _run(remote, f"{tool_name}:candidate", host, ("test", "-x", candidate))
+            if probe.success:
+                return candidate, result
+    return path, result
+
+
 def _traffic_timestamp(row: dict[str, object], timezone: tzinfo) -> datetime | None:
     date = row.get("date")
     if not isinstance(date, dict):
@@ -121,9 +148,21 @@ def _traffic_history(args: BaseModel, host: Host, remote: Executor) -> dict[str,
     mode = "h" if period == "last_24h" else "d"
     argv = ("vnstat", "--json", mode) + (("-i", interface) if interface else ())
     result = _run(remote, "query_traffic_history", host, argv)
+    if result.exit_code == 127 or "command not found" in result.stderr.casefold():
+        executable, _ = _resolve_executable(
+            remote, host, "vnstat", tool_name="query_traffic_history:discovery",
+        )
+        if executable is None:
+            return {"status": "unsupported", "period": period, "interface": interface,
+                    "source": "vnstat", "error": "EXECUTABLE_DISCOVERY_FAILED",
+                    "failure_kind": "executable_discovery_failed"}
+        argv = (executable, *argv[1:])
+        result = _run(remote, "query_traffic_history:resolved", host, argv)
     if not result.success:
         status = "unsupported" if result.exit_code == 127 else "error"
-        return {"status": status, "period": period, "interface": interface, "source": "vnstat", **_error(result)}
+        failure_kind = "command_not_found" if result.exit_code == 127 else "command_failed"
+        return {"status": status, "period": period, "interface": interface, "source": "vnstat",
+                "failure_kind": failure_kind, **_error(result)}
     try:
         payload = json.loads(result.stdout)
         interfaces = payload["interfaces"]
@@ -131,13 +170,13 @@ def _traffic_history(args: BaseModel, host: Host, remote: Executor) -> dict[str,
             raise TypeError
         candidates = [item for item in interfaces if isinstance(item, dict) and isinstance(item.get("name"), str)]
     except (json.JSONDecodeError, KeyError, TypeError):
-        return {"status": "error", "period": period, "interface": interface, "source": "vnstat", "error": "PARSER_FAILED"}
+        return {"status": "error", "period": period, "interface": interface, "source": "vnstat", "error": "PARSER_FAILED", "failure_kind": "parser_failed"}
     if interface:
         candidates = [item for item in candidates if item["name"] == interface]
     if not candidates:
-        return {"status": "no_data", "period": period, "interface": interface, "source": "vnstat"}
+        return {"status": "no_data", "period": period, "interface": interface, "source": "vnstat", "failure_kind": "no_data"}
     if len(candidates) != 1:
-        return {"status": "error", "period": period, "interface": None, "source": "vnstat", "error": "AMBIGUOUS_INTERFACE", "candidates": [item["name"] for item in candidates[:16]]}
+        return {"status": "error", "period": period, "interface": None, "source": "vnstat", "error": "AMBIGUOUS_INTERFACE", "failure_kind": "ambiguous_interface", "candidates": [item["name"] for item in candidates[:16]]}
     selected = candidates[0]
     traffic = selected.get("traffic")
     rows = traffic.get("hour" if mode == "h" else "day") if isinstance(traffic, dict) else None
@@ -146,7 +185,7 @@ def _traffic_history(args: BaseModel, host: Host, remote: Executor) -> dict[str,
     clock = _run(remote, "query_traffic_history:clock", host, ("date", "--iso-8601=seconds"))
     if not clock.success:
         return {"status": "error", "period": period, "interface": selected["name"],
-                "source": "vnstat", "error": "HOST_TIME_UNAVAILABLE"}
+                "source": "vnstat", "error": "HOST_TIME_UNAVAILABLE", "failure_kind": "host_time_invalid"}
     try:
         value = clock.stdout.strip()
         if len(value) > 64 or "\n" in value or "\r" in value:
@@ -156,7 +195,7 @@ def _traffic_history(args: BaseModel, host: Host, remote: Executor) -> dict[str,
             raise ValueError
     except (ValueError, OverflowError):
         return {"status": "error", "period": period, "interface": selected["name"],
-                "source": "vnstat", "error": "HOST_TIME_INVALID"}
+                "source": "vnstat", "error": "HOST_TIME_INVALID", "failure_kind": "host_time_invalid"}
     dated: list[tuple[datetime, dict[str, object]]] = []
     for row in rows:
         if isinstance(row, dict) and (stamp := _traffic_timestamp(row, now.tzinfo)) is not None:
@@ -170,7 +209,7 @@ def _traffic_history(args: BaseModel, host: Host, remote: Executor) -> dict[str,
     else:
         chosen = [(stamp, row) for stamp, row in dated if now.date() - timedelta(days=6) <= stamp.date() <= now.date()]
     if not chosen:
-        return {"status": "no_data", "period": period, "interface": selected["name"], "source": "vnstat"}
+        return {"status": "no_data", "period": period, "interface": selected["name"], "source": "vnstat", "failure_kind": "no_data"}
     try:
         rx = sum(int(row["rx"]) for _, row in chosen)
         tx = sum(int(row["tx"]) for _, row in chosen)
@@ -300,23 +339,7 @@ def execute_generic(name: str, args: BaseModel, host: Host, remote: Executor) ->
         return {"package": package, "installed": status == "installed", "status": status, "version": version or None}
     if name == "query_executable":
         executable = args.executable_name  # type: ignore[attr-defined]
-        result = _run(remote, name, host, ("which", "--", executable))
-        path = result.stdout.splitlines()[0].strip() if result.success and result.stdout.strip() else None
-        if path and (not path.startswith("/") or len(path) > 256 or any(char.isspace() for char in path)):
-            path = None
-        # A non-interactive PATH is only one piece of evidence. Probe bounded,
-        # code-owned user/system locations without evaluating shell startup files.
-        if path is None:
-            candidates = (
-                f"/home/{host.ssh_user}/.local/bin/{executable}",
-                f"/home/{host.ssh_user}/bin/{executable}",
-                f"/usr/local/bin/{executable}", f"/usr/bin/{executable}",
-            )
-            for candidate in candidates:
-                probe = _run(remote, f"{name}:candidate", host, ("test", "-x", candidate))
-                if probe.success:
-                    path = candidate
-                    break
+        path, result = _resolve_executable(remote, host, executable)
         if path is None and result.exit_code not in {0, 1, 127}:
             return {"executable": executable, "exists": None, **_error(result)}
         return {"executable": executable, "exists": bool(path), "path": path}
