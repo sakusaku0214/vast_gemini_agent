@@ -72,7 +72,6 @@ def validate_read_argv(argv: Sequence[str]) -> ValidatedArgv:
     if executable == "sudo":
         if len(clean) < 3 or clean[1] != "-n":
             raise ArgvRejected("sudo READ requires exactly the non-interactive -n prefix")
-        executable_index = 2
         executable = PurePosixPath(clean[2]).name.casefold()
 
     if executable in SHELL_EXECUTABLES or executable == "eval":
