@@ -16,6 +16,7 @@ class Host(BaseModel):
     address: str = Field(min_length=1)
     ssh_user: str = Field(min_length=1)
     ssh_port: int = Field(default=22, ge=1, le=65535)
+    expected_gpu_count: int | None = Field(default=None, ge=1)
     aliases: list[str] = Field(default_factory=list)
     capabilities: Capabilities = Field(default_factory=Capabilities)
     enabled: bool = True
