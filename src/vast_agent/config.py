@@ -20,9 +20,9 @@ class GeminiSettings(BaseModel):
     investigate_thinking_level: str = "medium"
     allow_high_thinking: bool = True
     store_interactions: bool = False
-    max_agent_steps: int = 4
-    max_tool_calls: int = 6
-    max_llm_calls: int = 4
+    max_agent_steps: int = 6
+    max_tool_calls: int = 10
+    max_llm_calls: int = 6
     max_evidence_chars_per_tool: int = 2500
     max_replayed_tool_rounds: int = 2
     max_history_incidents: int = 3
@@ -106,7 +106,7 @@ def initialize_config(paths: RuntimePaths, examples: Path | None = None) -> None
     paths.create()
     defaults = {
         paths.hosts_file: "hosts: {}\n",
-        paths.agent_file: "ssh:\n  connect_timeout: 10\n  server_alive_interval: 5\n  server_alive_count_max: 2\ngemini:\n  model: gemini-3.8-flash\n  api_version: v1\n  default_thinking_level: low\n  investigate_thinking_level: medium\n  allow_high_thinking: true\n  store_interactions: false\n  max_replayed_tool_rounds: 2\ndiscord:\n  enabled: true\njobs:\n  max_parallel_hosts: 3\n  max_recent_jobs: 20\nconversation:\n  remember_last_host: true\n",
+        paths.agent_file: "ssh:\n  connect_timeout: 10\n  server_alive_interval: 5\n  server_alive_count_max: 2\ngemini:\n  model: gemini-3.8-flash\n  api_version: v1\n  default_thinking_level: low\n  investigate_thinking_level: medium\n  allow_high_thinking: true\n  store_interactions: false\n  max_agent_steps: 6\n  max_tool_calls: 10\n  max_llm_calls: 6\n  max_replayed_tool_rounds: 2\ndiscord:\n  enabled: true\njobs:\n  max_parallel_hosts: 3\n  max_recent_jobs: 20\nconversation:\n  remember_last_host: true\n",
     }
     for target, content in defaults.items():
         if not target.exists():
