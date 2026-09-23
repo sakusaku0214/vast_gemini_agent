@@ -1,6 +1,5 @@
 from vast_agent.app import main
-from vast_agent.execution.base import FakeExecutor
-from vast_agent.models.tool_result import ToolResult
+from vast_agent.services.agent_service import ServiceReply
 
 
 def test_cli_install_doctor_hosts(tmp_path, capsys):
@@ -16,40 +15,33 @@ def test_remaining_future_command_is_explicitly_unimplemented(tmp_path, capsys):
     assert "not implemented" in capsys.readouterr().err
 
 
-def test_ask_deterministic_does_not_require_gemini(tmp_path, capsys, monkeypatch):
+def test_ask_delegates_natural_language_without_local_routing(tmp_path, capsys, monkeypatch):
     assert main(["--runtime", str(tmp_path), "install"]) == 0
-    (tmp_path / "config" / "hosts.yaml").write_text(
-        "hosts:\n  test-host:\n    address: 192.0.2.20\n    ssh_user: tester\n"
-        "    capabilities:\n      nvidia: true\n",
-        encoding="utf-8",
-    )
-    fake = FakeExecutor({
-        "host_ping": ToolResult(success=True, duration_ms=1),
-        "get_gpu_status": ToolResult(success=True, stdout="0, GPU-x, Test, 42, 0, 0, 100, P8, 0000:01:00.0", duration_ms=1),
-    })
-    monkeypatch.setattr("vast_agent.app.SSHExecutor", lambda _: fake)
-    assert main(["--runtime", str(tmp_path), "ask", "test-hostのGPU温度"]) == 0
-    assert "42" in capsys.readouterr().out
-    fake.calls.clear()
-    assert main(["--runtime", str(tmp_path), "ask", "test-hostのディスク"]) == 0
-    assert fake.calls == [
-        "host_ping", "get_system_health", "get_d_state_processes", "get_service_status",
-    ]
+    seen = {}
+
+    class Service:
+        async def handle_question(self, question):
+            seen["question"] = question
+            return ServiceReply("Gemini handled it", 1)
+
+    monkeypatch.setattr("vast_agent.app._service", lambda *args: Service())
+    request = "全台の今日の通信量をランキング付けて一覧にして"
+    assert main(["--runtime", str(tmp_path), "ask", request]) == 0
+    assert seen["question"] == request
+    assert "Gemini handled it" in capsys.readouterr().out
 
 
-def test_disabled_host_is_rejected_by_ask_and_investigate(tmp_path, capsys, monkeypatch):
+def test_explicit_investigate_rejects_disabled_target(tmp_path, capsys, monkeypatch):
     assert main(["--runtime", str(tmp_path), "install"]) == 0
     (tmp_path / "config" / "hosts.yaml").write_text(
         "hosts:\n  disabled-host:\n    address: 192.0.2.30\n    ssh_user: tester\n"
-        "    enabled: false\n    capabilities:\n      nvidia: true\n",
+        "    enabled: false\n",
         encoding="utf-8",
     )
-    fake = FakeExecutor({})
-    monkeypatch.setattr("vast_agent.app.SSHExecutor", lambda _: fake)
-    assert main(["--runtime", str(tmp_path), "ask", "disabled-hostのGPU温度"]) == 2
-    assert main(["--runtime", str(tmp_path), "investigate", "disabled-host", "原因を調べて"]) == 2
-    assert fake.calls == []
-    assert capsys.readouterr().err.count("HOST_DISABLED") == 2
+    assert main([
+        "--runtime", str(tmp_path), "investigate", "disabled-host", "原因を調べて"
+    ]) == 2
+    assert "HOST_DISABLED" in capsys.readouterr().err
 
 
 def test_gemini_check_uses_stateless_text_input(tmp_path, capsys, monkeypatch):
