@@ -80,3 +80,53 @@ def test_offline_inspection_only_runs_ping_and_persists_failure(tmp_path, host):
         assert db.execute("SELECT count(*) FROM tool_runs").fetchone()[0] == 1
         assert db.execute("SELECT tool_name FROM tool_runs").fetchone()[0] == "host_ping"
         assert db.execute("SELECT count(*) FROM incidents").fetchone()[0] == 1
+
+
+
+def test_save_conversation_works_with_legacy_expanded_table(tmp_path):
+    database = Database(tmp_path / "legacy.db")
+    database.migrate()
+    with sqlite3.connect(database.path) as db:
+        db.execute("ALTER TABLE conversation_state ADD COLUMN last_recommended_action TEXT")
+        db.execute("ALTER TABLE conversation_state ADD COLUMN write_context_host TEXT")
+        db.execute(
+            "ALTER TABLE conversation_state ADD COLUMN context_hosts_json "
+            "TEXT NOT NULL DEFAULT '[]'"
+        )
+        db.execute(
+            "ALTER TABLE conversation_state ADD COLUMN context_kind "
+            "TEXT NOT NULL DEFAULT 'none'"
+        )
+        db.execute("ALTER TABLE conversation_state ADD COLUMN context_source TEXT")
+        db.execute(
+            "ALTER TABLE conversation_state ADD COLUMN investigation_context_json "
+            "TEXT NOT NULL DEFAULT '{}'"
+        )
+
+    database.save_conversation("10", "20", "Garage-X570", 42, None)
+    row = database.load_conversation("10", "20")
+
+    assert row["last_host"] == "Garage-X570"
+    assert row["last_job_id"] == 42
+    assert row["context_hosts_json"] == "[]"
+    assert row["context_kind"] == "none"
+
+
+def test_newer_legacy_schema_version_still_gets_simple_v2_proposal_table(tmp_path):
+    database = Database(tmp_path / "newer.db")
+    database.migrate()
+    with sqlite3.connect(database.path) as db:
+        db.execute("UPDATE schema_version SET version=99")
+        db.execute("DROP TABLE write_proposals")
+
+    database.migrate()
+
+    with sqlite3.connect(database.path) as db:
+        tables = {
+            row[0]
+            for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        version = db.execute("SELECT version FROM schema_version").fetchone()[0]
+
+    assert "write_proposals" in tables
+    assert version == 99
