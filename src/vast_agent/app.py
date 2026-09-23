@@ -121,11 +121,18 @@ def _agent(paths: RuntimePaths, registry, executor):
     database = Database(paths.database)
     secrets = _redaction_secrets(paths)
     functions = FunctionExecutor(
-        registry, InspectionService(database, paths.observation_logs, secrets), database,
-        executor, settings.max_evidence_chars_per_tool, secrets,
+        registry,
+        executor,
+        settings.max_evidence_chars_per_tool,
+        secrets,
     )
-    return InvestigationAgent(GoogleInteractionsClient(key, settings.api_version), functions,
-                              database, settings)
+    return InvestigationAgent(
+        GoogleInteractionsClient(key, settings.api_version),
+        functions,
+        database,
+        settings,
+        registry,
+    )
 
 
 def _service(paths: RuntimePaths, registry, executor) -> AgentService:
@@ -244,16 +251,8 @@ def main(argv: list[str] | None = None) -> int:
             client.run(secrets["DISCORD_BOT_TOKEN"], reconnect=True, log_handler=None)
         return 0
     if args.command == "ask":
-        decision = route_intent(args.question, registry)
-        if decision.action == "list_hosts":
-            print("\n".join(host.name for host in registry.hosts.values() if host.enabled)); return 0
-        if decision.host:
-            target = registry.resolve(decision.host)
-            if not target.enabled:
-                print(f"ERROR HOST_DISABLED: {target.name}", file=sys.stderr); return 2
         reply = asyncio.run(_service(paths, registry, executor).handle_question(args.question))
         print(reply.text)
-        if decision.route == Route.UNSUPPORTED_WRITE: return 3
         return 0 if reply.job_id is not None else 2
     if args.command == "investigate":
         try: target = registry.resolve(args.host)
@@ -264,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         agent = _agent(paths, registry, executor)
         if agent is None: print("Gemini unavailable: GEMINI_API_KEY is not configured."); return 2
         question = redact(args.question, _redaction_secrets(paths))
-        print(agent.investigate(target.name, question).model_dump_json(indent=2)); return 0
+        print(agent.investigate(target.name, question)); return 0
     try: host = registry.resolve(args.host)
     except KeyError:
         print(f"ERROR HOST_NOT_FOUND: {args.host}", file=sys.stderr); return 2
