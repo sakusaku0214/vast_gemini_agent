@@ -22,6 +22,7 @@ class SSHExecutor:
         # OpenSSH transports the remote command as text. Serialize validated argv
         # so each token remains literal; callers never supply a shell program/string.
         remote_command = shlex.join(command)
+        known_hosts_option = f'UserKnownHostsFile="{self.known_hosts.as_posix()}"'
         args = [
             self.ssh_executable,
             "-p", str(host.ssh_port),
@@ -29,7 +30,7 @@ class SSHExecutor:
             "-o", f"ConnectTimeout={min(timeout, 30)}",
             "-o", "ServerAliveInterval=5",
             "-o", "ServerAliveCountMax=2",
-            "-o", f"UserKnownHostsFile={self.known_hosts}",
+            "-o", known_hosts_option,
             "-o", "StrictHostKeyChecking=yes",
             "--", f"{host.ssh_user}@{host.address}",
             remote_command,
