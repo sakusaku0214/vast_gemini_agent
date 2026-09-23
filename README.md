@@ -28,16 +28,20 @@ evidence fails closed as unknown; an inactive service is degraded rather than pa
 
 ## Safe capability acquisition
 
-`PACKAGE_INSTALL` is a dangerous, approval-gated typed action. It only accepts packages in the
-code-owned capability catalog (`vnstat`, `ethtool`, and `nvme-cli`); it is not exposed as a Gemini
-tool and does not accept shell commands, repositories, URLs, or arbitrary package-manager input.
+`PACKAGE_INSTALL` is a dangerous, approval-gated typed action. Catalogs describe known capabilities
+and their automatic acquisition metadata; they are not the global execution permission system.
+An explicitly user-named Debian/Ubuntu package may instead be dynamically validated against the
+target host. Package targets must come verbatim from the current message and pass the strict Debian
+package-name schema. The action is not exposed as a Gemini tool and does not accept shell commands,
+repositories, URLs, or arbitrary package-manager input.
 The default remains fail-closed: `operations.enabled` is `false` and `allowed_actions` is empty.
 
 To opt a deployment in, add `PACKAGE_INSTALL` to `operations.allowed_actions` and enable
 operations. Before a proposal and again after approval, the agent checks SSH and passwordless
 sudo, package status and candidate, package-manager locks, active containers, and running VMs.
 Any active workload, running VM, missing candidate, or busy package manager blocks installation.
-Approved installs use the fixed `apt-get install -y --no-install-recommends -- <package>` argv once,
+Thus every install still follows typed `PACKAGE_INSTALL` → policy → OWNER approval → fresh preflight
+→ fixed argv. Approved installs use the fixed `apt-get install -y --no-install-recommends -- <package>` argv once,
 then verify the installed version and observe known executables/services without starting or
 enabling a service.
 

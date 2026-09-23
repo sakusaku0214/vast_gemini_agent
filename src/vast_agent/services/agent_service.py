@@ -19,7 +19,7 @@ from vast_agent.actions.models import (
 )
 from vast_agent.actions.package_catalog import capability_definition
 from vast_agent.actions.preflight import package_manager_state
-from vast_agent.actions.resolver import ActionIntentResolver
+from vast_agent.actions.resolver import ActionIntentResolver, InvalidPackageNameError
 from vast_agent.agent.models import Route
 from vast_agent.agent.router import route_intent
 from vast_agent.config import HostRegistry
@@ -90,7 +90,10 @@ class AgentService:
             else:
                 return ServiceReply("対象actionが一意ではありません。hostと操作を指定してください。")
         else:
-            action = self.action_resolver.resolve(text, state.last_host)
+            try:
+                action = self.action_resolver.resolve(text, state.last_host)
+            except InvalidPackageNameError:
+                return ServiceReply("INVALID_PACKAGE_NAME: package名の形式が不正です。")
 
         if action is not None:
             if self.actions is None:
@@ -118,17 +121,11 @@ class AgentService:
             self.conversations.save(owner, channel, state)
             disabled = "\n⛔ Operations disabled: approval cannot execute." if not self.actions.settings.enabled else ""
             policy = "BLOCK" if proposal.status == ProposalStatus.BLOCKED else "ALLOW"
-            summary = self._proposal_text(proposal, policy) + disabled
+            decision = self.actions.policy.evaluate(
+                action, proposal.preflight_summary, self.actions.settings,
+            )
+            summary = self._proposal_text(proposal, policy, decision.reasons) + disabled
             return ServiceReply(self._clean(summary), proposal=proposal, policy=policy)
-
-        if (acquisition_intent(text) == AcquisitionIntent.EXPLICIT_INSTALL
-                and any(word in folded for word in ("入れて", "install", "インストール"))):
-            try:
-                self.registry.resolve_in_text(text)
-            except KeyError:
-                pass
-            else:
-                return ServiceReply("そのpackageは自動導入対象として未登録です。")
 
         if ("rebootすべき" in folded or "再起動すべき" in folded) and self.agent is not None:
             host, choices = self._resolve_host(text, None, state)
@@ -240,7 +237,7 @@ class AgentService:
         return redact(value, self.secrets)
 
     @staticmethod
-    def _proposal_text(proposal, policy: str) -> str:
+    def _proposal_text(proposal, policy: str, reasons: list[str] | None = None) -> str:
         state = proposal.preflight_summary
         package = (f"Package: {proposal.parameters.package_name}\n"
                    if isinstance(proposal.parameters, PackageInstallParameters) else "")
@@ -255,7 +252,8 @@ class AgentService:
         return (f"⚠️ Proposal #{proposal.id}\nHost: {proposal.host}\n"
                 f"Action: {proposal.action_type}\nRisk: {proposal.risk_class}\n"
                 f"{package}{reason}"
-                f"Expires: {proposal.expires_at.isoformat()}\nPolicy: {policy}\n"
+                f"Expires: {proposal.expires_at.isoformat()}\nPolicy: {policy}"
+                f"{(' (' + ', '.join(reasons) + ')') if reasons else ''}\n"
                 f"Preflight: SSH={'OK' if state.ssh_reachable else 'BLOCK'}, "
                 f"sudo={'OK' if state.sudo_available else 'BLOCK'}, "
                 f"target={state.current_state}, VM={'running' if state.running_vm else 'none'}, "

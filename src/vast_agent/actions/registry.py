@@ -54,10 +54,9 @@ class ActionRegistry:
             valid = isinstance(request.parameters, RebootParameters)
         elif request.action_type == ActionType.PACKAGE_INSTALL:
             valid = isinstance(request.parameters, PackageInstallParameters)
-            if valid:
+            if valid and request.parameters.expected_capability is not None:
                 definition = package_definition(request.parameters.package_name)
-                valid = definition is not None and request.parameters.expected_capability in {
-                    None, definition.capability_id,
-                }
+                valid = (definition is not None and
+                         request.parameters.expected_capability == definition.capability_id)
         if not valid:
             raise ValueError("action type and parameters do not match")

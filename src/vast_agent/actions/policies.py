@@ -57,7 +57,7 @@ class PolicyEngine:
             if not state.filesystem_healthy: reasons.append("FILESYSTEM_UNHEALTHY")
         if request.action_type == ActionType.PACKAGE_INSTALL:
             if state.package_installed: reasons.append("PACKAGE_ALREADY_INSTALLED")
-            if not state.package_candidate: reasons.append("PACKAGE_CANDIDATE_NOT_FOUND")
+            if not state.package_candidate: reasons.append("PACKAGE_NOT_AVAILABLE")
             if state.package_manager_busy is not False: reasons.append("PACKAGE_MANAGER_BUSY")
             if state.active_workload: reasons.append("ACTIVE_WORKLOAD")
             if state.running_vm: reasons.append("RUNNING_VM")
