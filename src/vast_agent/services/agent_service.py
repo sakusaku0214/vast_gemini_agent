@@ -18,6 +18,7 @@ class ServiceReply:
     text: str
     job_id: int | None = None
     ignored: bool = False
+    proposal_id: int | None = None
 
 
 class AgentService:
@@ -78,10 +79,15 @@ class AgentService:
         if approval is not None:
             return await self._execute_approved(approval, str(owner), str(channel))
 
+        rejection = self._rejection_id(text)
+        if rejection is not None:
+            return self._reject_proposal(rejection, str(owner), str(channel))
+
         if self.agent is None:
             return ServiceReply("Gemini unavailable: GEMINI_API_KEY is not configured.")
 
         safe_text = self._clean(text)
+        pending_before = {item.id for item in self.proposals.pending_for(str(owner), str(channel))}
         previous_turn = None
         if state.last_job_id is not None:
             previous = self.jobs.database.get_job(state.last_job_id)
@@ -126,7 +132,14 @@ class AgentService:
             summary = "調査を完了できませんでした。詳細はagent logを確認してください。"
             self.jobs.finish(job, summary, "SERVICE_ERROR")
 
-        return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
+        pending_after = self.proposals.pending_for(str(owner), str(channel))
+        new_pending = [item.id for item in pending_after if item.id not in pending_before]
+        proposal_id = new_pending[0] if len(new_pending) == 1 else None
+        return ServiceReply(
+            self._clean(f"Job #{job.id}\n{summary}"),
+            job.id,
+            proposal_id=proposal_id,
+        )
 
     def _approval_id(self, text: str, owner: str, channel: str) -> int | None:
         match = re.fullmatch(r"\s*承認(?:\s*#?(\d+))?\s*", text)
@@ -139,6 +152,30 @@ class AgentService:
         if len(pending) == 1:
             return pending[0].id
         return -1
+
+    @staticmethod
+    def _rejection_id(text: str) -> int | None:
+        match = re.fullmatch(r"\s*拒否\s*#?(\d+)\s*", text)
+        return int(match.group(1)) if match else None
+
+    def _reject_proposal(
+        self,
+        proposal_id: int,
+        owner: str,
+        channel: str,
+    ) -> ServiceReply:
+        if self.proposals.reject(proposal_id, owner, channel):
+            return ServiceReply(f"Proposal #{proposal_id} REJECTED", proposal_id=proposal_id)
+
+        existing = self.proposals.get(proposal_id)
+        if existing is None:
+            return ServiceReply(f"Proposal #{proposal_id} は存在しません。")
+        if existing.owner_id != owner or existing.channel_id != channel:
+            return ServiceReply(f"Proposal #{proposal_id} はこのOWNER/channelでは拒否できません。")
+        return ServiceReply(
+            f"Proposal #{proposal_id} は承認待ちではありません: {existing.status}",
+            proposal_id=proposal_id,
+        )
 
     async def _execute_approved(
         self,
