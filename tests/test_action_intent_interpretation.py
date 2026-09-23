@@ -73,3 +73,34 @@ def test_interpreter_rejects_unknown_actions_untyped_parameters_and_non_writes(t
 
     assert interpreter.interpret_action("garage-x570", "X570をいい感じにして") is None
     assert client.requests[0]["tools"] == []
+
+
+@pytest.mark.parametrize("message", [
+    "X570を再起動して",
+    "X570をrebootして",
+    "X570をリブートして",
+])
+def test_explicit_reboot_intent_is_grounded(tmp_path, message):
+    interpreter, _ = agent(tmp_path, {
+        "action_type": "HOST_REBOOT",
+        "parameters": {"kind": "reboot", "assessment": "HOST_REBOOT_CANDIDATE"},
+    })
+
+    request = interpreter.interpret_action("garage-x570", message)
+
+    assert request is not None
+    assert request.action_type == ActionType.HOST_REBOOT
+
+
+@pytest.mark.parametrize("message", [
+    "X570をいい感じにして",
+    "X570は再起動した方がいい？",
+    "X570はrebootすべき？",
+])
+def test_vague_or_advisory_text_cannot_ground_model_selected_reboot(tmp_path, message):
+    interpreter, _ = agent(tmp_path, {
+        "action_type": "HOST_REBOOT",
+        "parameters": {"kind": "reboot", "assessment": "HOST_REBOOT_CANDIDATE"},
+    })
+
+    assert interpreter.interpret_action("garage-x570", message) is None

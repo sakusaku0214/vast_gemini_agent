@@ -36,5 +36,13 @@ def action_target_is_grounded(request: ActionRequest, message: str) -> bool:
         return token is not None and token in folded
     if isinstance(params, VMParameters):
         return bool(re.search(rf"(?<![a-z0-9]){params.mode}(?![a-z0-9])", folded))
-    # HOST_REBOOT has no mutable sub-target; its host is separately fixed to this user turn.
-    return request.action_type == ActionType.HOST_REBOOT
+    if request.action_type == ActionType.HOST_REBOOT:
+        # The host is grounded separately, but reboot intent must also be authored in this
+        # turn.  Advice and questions stay on the existing assessment path and cannot be
+        # promoted to a mutation merely because the model selected HOST_REBOOT.
+        reboot_intent = bool(re.search(r"再起動|リブート|(?<![a-z0-9])reboot(?![a-z0-9])", folded))
+        advice_or_question = any(marker in folded for marker in (
+            "すべき", "必要", "した方", "でしょう", "ですか", "?", "？",
+        ))
+        return reboot_intent and not advice_or_question
+    return False

@@ -13,6 +13,7 @@ from vast_agent.actions.models import (
     ActionType,
     PackageInstallParameters,
     PreflightSnapshot,
+    RebootParameters,
     VerificationResult,
 )
 from vast_agent.actions.policies import PolicyEngine
@@ -371,6 +372,25 @@ class FlexibleInstallAgent:
         )
 
 
+class RebootIntentAgent:
+    def __init__(self):
+        self.interpretations = []
+        self.investigations = []
+
+    def interpret_action(self, host, text):
+        self.interpretations.append((host, text))
+        return ActionRequest(
+            host=host, action_type=ActionType.HOST_REBOOT,
+            parameters=RebootParameters(assessment="HOST_REBOOT_CANDIDATE"),
+        )
+
+    def investigate(self, host, text):
+        self.investigations.append((host, text))
+        return InvestigationResult(
+            summary="assessment only", recommended_action="HOST_REBOOT_CANDIDATE",
+        )
+
+
 def test_service_uses_flexible_interpretation_as_proposal_only_fallback(tmp_path):
     db, actions, remote, preflight = coordinator(tmp_path)
     agent = FlexibleInstallAgent()
@@ -388,6 +408,27 @@ def test_service_uses_flexible_interpretation_as_proposal_only_fallback(tmp_path
     assert reply.proposal.status == "PENDING"
     assert reply.proposal.parameters.package_name == "nvitop"
     assert preflight.calls == 1
+    assert remote.calls == []
+
+
+def test_reboot_fallback_requires_current_turn_host_and_preserves_advice_assessment(tmp_path):
+    db, actions, remote, _ = coordinator(tmp_path)
+    agent = RebootIntentAgent()
+    service = AgentService(
+        actions.hosts, object(), remote, JobManager(db), ConversationStore(db),
+        agent=agent, actions=actions,
+    )
+
+    hostless = asyncio.run(service.handle_question("再起動して", 7, 9))
+    advice = asyncio.run(service.handle_question("garage-magは再起動した方がいい？", 7, 9))
+
+    assert hostless.proposal is None
+    assert "WRITE" in hostless.text
+    assert agent.interpretations == [("garage-mag", "garage-magは再起動した方がいい？")]
+    assert agent.investigations == [("garage-mag", "garage-magは再起動した方がいい？")]
+    assert advice.proposal is None
+    assert "assessment only" in advice.text
+    assert db.pending_approval_count() == 0
     assert remote.calls == []
 
 
