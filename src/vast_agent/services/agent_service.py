@@ -92,7 +92,7 @@ class AgentService:
             "全部" in folded and state.context_kind == "fleet"
         ) or len(fleet_hosts) > 1
         if fleet_hosts and fleet_scope:
-            if "通信量" in folded or "vnstat" in folded:
+            if "通信量" in folded or "トラフィック" in folded or "traffic" in folded:
                 return await self._fleet_traffic(
                     self._clean(text), state, owner, channel, fleet_hosts,
                 )
@@ -512,7 +512,7 @@ class AgentService:
         """
         mutation_terms = (
             "再起動", "restart", "reset", "リセット", "止めて", "停止", "stop",
-            "install", "インストール", "入れて", "remove", "削除", "enable", "disable",
+            "入れて", "remove", "削除", "enable", "disable",
             "reboot", "shutdown", "kill",
         )
         if any(term in text for term in mutation_terms):
@@ -537,6 +537,7 @@ class AgentService:
             "状態", "ディスク", "ネットワーク", "ネット周り", "インターフェース",
             "ドライバ", "速度", "サービス", "パッケージ", "プロセス", "カーネル",
             "実行ファイル", "コマンド", "入ってる", "入れてた", "生きてる",
+            "通信量", "トラフィック", "温度", "値", "結果", "エラー", "原因", "止まってる",
         )
         english_domains = re.search(
             r"(?<![a-z0-9_])(?:gpu|pci|vast|docker|vm|network|nic|lan|interface|driver|"
@@ -544,7 +545,7 @@ class AgentService:
             text,
         )
         read_question = any(marker in text for marker in (
-            "?", "？", "は", "見て", "調べ", "確認", "どう", "ある", "何", "なに",
+            "?", "？", "は", "見て", "調べ", "確認", "教えて", "どう", "ある", "何", "なに", "値",
         ))
         return read_question and (
             english_domains is not None or any(domain in text for domain in japanese_domains)
@@ -563,6 +564,10 @@ class AgentService:
         if "全部" in folded and state.context_kind == "fleet":
             names = set(state.current_hosts)
             return tuple(host for host in enabled if host.name in names)
+        if (state.context_kind == "fleet" and state.current_hosts
+                and (self._has_host_relevance(folded) or self._is_read_follow_up(folded))):
+            names = set(state.current_hosts)
+            return tuple(host for host in enabled if host.name in names)
         matches = [
             host for host in enabled
             if any(name.casefold() in folded for name in (host.name, *host.aliases))
@@ -572,6 +577,7 @@ class AgentService:
     async def _fleet_adaptive(self, request, state, owner, channel, hosts) -> ServiceReply:
         """Run the same safe InvestigationAgent independently across a fixed host set."""
         job, token = self.jobs.create("fleet-investigate", None, request)
+        prior_context = dict(state.investigation_context)
         state.last_host = None
         state.write_context_host = None
         state.current_hosts = tuple(host.name for host in hosts)
@@ -595,7 +601,7 @@ class AgentService:
                         ):
                             if token.cancelled:
                                 return None
-                            return self._call_investigate(host.name, request, {})
+                            return self._call_investigate(host.name, request, prior_context)
                     finally:
                         current_cancellation.reset(context)
                 try:
@@ -715,6 +721,7 @@ class AgentService:
         self.jobs.start(job)
         semaphore = asyncio.Semaphore(self.max_parallel_hosts)
         functions = getattr(self.agent, "functions", None)
+        period, heading = self._traffic_period(request)
 
         async def one(host):
             async with semaphore:
@@ -725,13 +732,14 @@ class AgentService:
                 try:
                     value = await asyncio.to_thread(
                         functions.execute, "query_traffic_history",
-                        {"host": host.name, "period": "yesterday", "interface": None},
+                        {"host": host.name, "period": period, "interface": None},
                         host.name,
                     )
                     evidence = value.get("untrusted_evidence", {})
                     if isinstance(evidence, dict) and evidence.get("status") == "available":
                         return host.name, evidence, None
-                    return host.name, None, str(evidence.get("status", "unavailable"))
+                    reason = evidence.get("failure_kind") or evidence.get("error") or evidence.get("status")
+                    return host.name, None, str(reason or "unavailable").casefold()
                 except Exception:
                     return host.name, None, "read failed"
 
@@ -747,11 +755,31 @@ class AgentService:
                 f"{self._bytes(value['tx_bytes'])} | {self._bytes(value['total_bytes'])} |"
             )
         unavailable = [f"- {name}: {error}" for name, _, error in results if error]
-        summary = "昨日の通信量 (host-local time)\n" + "\n".join(rows)
+        summary = f"{heading}の通信量 (host-local time)\n" + "\n".join(rows)
         if unavailable:
             summary += "\n\nUnavailable\n" + "\n".join(unavailable)
+        state.investigation_context = {
+            "previous_goal": request[:500], "hosts": list(state.current_hosts),
+            "conclusion": summary[:1200], "key_findings": [row[:300] for row in rows[2:10]],
+            "missing_evidence": unavailable[:6],
+        }
+        self.conversations.save(owner, channel, state)
         self.jobs.finish(job, self._clean(summary), "FLEET_PARTIAL_FAILURE" if unavailable else None)
         return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
+
+    @staticmethod
+    def _traffic_period(request: str) -> tuple[str, str]:
+        """Map an explicit user period to the backend; default to the current host-local day."""
+        folded = request.casefold()
+        if "過去24時間" in folded or re.search(r"(?<![a-z0-9])24h(?![a-z0-9])", folded):
+            return "last_24h", "過去24時間"
+        if "直近7日" in folded or "1週間" in folded:
+            return "last_7d", "直近7日"
+        if "昨日" in folded:
+            return "yesterday", "昨日"
+        if "今日" in folded:
+            return "today", "今日"
+        return "today", "今日"
 
     @staticmethod
     def _bytes(value: int) -> str:

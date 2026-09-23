@@ -144,13 +144,44 @@ def test_host_local_time_failure_has_no_utc_fallback(tmp_path, host, clock):
     (ToolResult(success=True, stdout="not-json", duration_ms=1), "error"),
     (ToolResult(success=False, error_code=ErrorCode.SSH_TIMEOUT, duration_ms=15000), "error"),
 ])
-def test_traffic_failures_do_not_fall_back(tmp_path, host, tool_result, status):
+def test_non_path_traffic_failures_do_not_fall_back(tmp_path, host, tool_result, status):
     functions, remote = functions_for(tmp_path, host, {"query_traffic_history": tool_result})
     result = evidence(functions.execute("query_traffic_history", {
         "host": host.name, "period": "today",
     }, host.name))
     assert result["status"] == status
-    assert remote.calls == ["query_traffic_history"]
+    if tool_result.exit_code == 127:
+        assert result["failure_kind"] == "executable_discovery_failed"
+        assert remote.calls[0] == "query_traffic_history"
+        assert "query_traffic_history:discovery" in remote.calls
+    else:
+        assert remote.calls == ["query_traffic_history"]
+
+
+def test_traffic_retries_with_discovered_absolute_executable(tmp_path, host):
+    today = datetime.now(UTC).date()
+    payload = traffic_payload([{"name": "eth0", "traffic": {"day": [vnstat_day(today)]}}])
+    functions, remote = functions_for(tmp_path, host, {
+        "query_traffic_history": ToolResult(
+            success=False, exit_code=127, stderr="vnstat: command not found", duration_ms=1,
+        ),
+        "query_traffic_history:discovery": ToolResult(success=False, exit_code=1, duration_ms=1),
+        "query_traffic_history:discovery:candidate": ToolResult(
+            success=True, duration_ms=1,
+        ),
+        "query_traffic_history:resolved": ToolResult(success=True, stdout=payload, duration_ms=1),
+        "query_traffic_history:clock": ToolResult(
+            success=True, stdout=datetime.now(UTC).isoformat(), duration_ms=1,
+        ),
+    })
+
+    result = evidence(functions.execute("query_traffic_history", {
+        "host": host.name, "period": "today",
+    }, host.name))
+
+    assert result["status"] == "available"
+    assert result["total_bytes"] == 150
+    assert "query_traffic_history:resolved" in remote.calls
 
 
 def test_multiple_traffic_interfaces_are_ambiguous(tmp_path, host):

@@ -30,13 +30,14 @@ def explicit_write_intent(text: str) -> bool:
         return False
     mutation = any(word in folded for word in WRITE_WORDS) or bool(re.search(
         r"(?:開放|解除|無効|有効|動かし直|適用|変更|削除|入れて|落として|"
+        r"インストールして|導入して|"
         r"\b(?:enable|disable|install|remove|start|kill)\b)", folded,
     ))
     if not mutation:
         return False
     imperative = bool(re.search(
         r"(?:して(?:おいて|ください|くれ|ほしい)?|しといて|して$|"
-        r"開放して|解除して|止めて|絞って|入れて|"
+        r"開放して|解除して|止めて|絞って|入れて|インストールして|導入して|"
         r"\b(?:please\s+)?(?:restart|reset|stop|reboot|shutdown|enable|disable|install|remove|start|kill)\b)",
         folded,
     ))
