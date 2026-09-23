@@ -3,6 +3,7 @@ from __future__ import annotations
 from vast_agent.agent.models import IntentDecision, Route
 from vast_agent.config import HostRegistry
 
+# Deterministic zero-token fast paths only; never a capability or reasoning boundary.
 SCOPES = {
     "gpu温度": "gpu", "gpu状態": "gpu", "gpuの状態": "gpu", "gpu見て": "gpu",
     "pci状態": "pci", "pciの状態": "pci", "pci見て": "pci",

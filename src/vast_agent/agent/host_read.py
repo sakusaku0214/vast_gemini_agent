@@ -369,24 +369,32 @@ def execute_diagnostic(name: str, host: Host, remote: Executor) -> dict[str, obj
 
 
 def discover(host: Host) -> dict[str, object]:
+    """Describe callable READ APIs plus optional acquisition metadata.
+
+    This is intentionally not a complete list of concepts the model may understand;
+    generic executable/help discovery extends beyond these metadata entries.
+    """
     capabilities = []
     for item in HOST_READ_CAPABILITIES.values():
         available = item.available and all(getattr(host.capabilities, cap, False) for cap in item.required_host_capabilities)
-        capabilities.append({"name": item.name, "category": item.category,
-                             "risk_class": item.risk_class, "available": available})
-    high_level = []
+        capabilities.append({"name": item.name, "risk_class": item.risk_class,
+                             "available": available})
+    acquisition_metadata = []
     for definition in CAPABILITY_REGISTRY.definitions:
         backend_name = definition.read_backend.tool_name if definition.read_backend else None
         backend = HOST_READ_CAPABILITIES.get(backend_name) if backend_name else None
         acquisition = definition.acquisition
-        high_level.append({
+        acquisition_metadata.append({
             "capability_id": definition.capability_id,
             "backend": backend_name,
             "backend_registered": backend is not None,
             "acquisition": acquisition.package_name if acquisition else None,
         })
-    return {"host": host.name, "capabilities": capabilities,
-            "high_level_capabilities": high_level}
+    return {"host": host.name,
+            # Compatibility key retained; it is the callable READ API surface.
+            "capabilities": capabilities, "acquisition_metadata": acquisition_metadata,
+            "high_level_capabilities": acquisition_metadata,
+            "discovery_note": "Not an intelligence boundary; generic CLI discovery is available."}
 
 
 # Fail fast if a required declarative backend is absent or unsafe. Optional future backends may

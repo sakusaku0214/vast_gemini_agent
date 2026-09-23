@@ -17,6 +17,8 @@ Vast Gemini Agent は、Windows 11 上の Discord / Gemini フロントエンド
 
 **Flexible before execution. Strict at execution.**
 
+**Think freely. Execute only with approval. — 「考えるのは自由、実行は承認制」**
+
 - **READ:** code-side validator が read-only と確認した操作は自動実行できます。
 - **WRITE:** Agent は自由に調査・推論して exact plan を作れますが、実行には OWNER の Approve が必須です。
 - **Hard safety floor:** 破壊的または security-sensitive な少数の操作は、承認されても実行しません。
@@ -88,6 +90,18 @@ Agent は次の reusable flow を使えます。
 たとえば `vastai --help`、`vastai show machines`、`docker ps`、`nvidia-smi -L` は shell string ではなく argv として扱います。`|`, redirects, `&&`, `;`, command substitution、shell expansion、`sh -c`、`bash -c`、`eval` は拒否します。stdout/stderr は timeout、byte/line limit、UTF-8 replacement、control-character cleanup、secret redaction を通ります。
 
 CLI 名の巨大な permission catalog はありません。installed executable、help evidence、argv validation、risk classification を組み合わせます。未知 verb は自動 READ にせず、conservative に Proposal または clarification へ倒します。
+
+### Catalogs and registries
+
+**Catalogs are metadata, not permission or intelligence boundaries.** いずれの registry も Gemini が理解してよい概念を制限しません。
+
+- `HOST_READ_CAPABILITIES` は typed arguments、host binding、bounded output を持つ安全な callable READ API surface です。
+- acquisition metadata registry は `traffic_history → vnstat`、interface detail → `ethtool`、NVMe health → `nvme-cli` のような、選択された自動取得候補だけを保持します。一般的な capability catalog ではありません。
+- generic CLI discovery は acquisition metadata にない installed executable も `query_executable → query_cli_help → run_readonly_argv` で調査できます。
+- `operations.allowed_actions` は既存 typed action の execution deployment policy です。
+- `operations.generic_operations_enabled` は generic mutation execution の独立 policy です。
+
+`SCOPES` / `WRITE_WORDS` / `AGENT_WORDS` は明白な要求を低 latency で処理する fast path にすぎません。該当しない host-context message は tool-free semantic classifier が READ / WRITE / ADVICE / GENERAL / UNCERTAIN に分類します。この分類は host、target、parameter、argv、permission を選べず、WRITE の場合も investigation と grounding を経て Proposal を作るだけです。
 
 ## Approval flow
 

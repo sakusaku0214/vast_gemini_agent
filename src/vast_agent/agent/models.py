@@ -31,6 +31,14 @@ class ActionIntentCandidate(BaseModel):
     parameters: dict[str, object] = Field(default_factory=dict)
 
 
+class HostOperationIntentCandidate(BaseModel):
+    """Routing-only semantic result; it carries no host, target, argv, or authority."""
+
+    model_config = ConfigDict(extra="forbid")
+    intent: Literal["READ", "WRITE", "ADVICE", "GENERAL", "UNCERTAIN"]
+    reason: str = Field(max_length=200)
+
+
 class InspectHostArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     host: str

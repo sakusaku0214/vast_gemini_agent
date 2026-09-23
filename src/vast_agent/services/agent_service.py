@@ -162,30 +162,31 @@ class AgentService:
 
         decision = route_intent(text, self.registry)
         if decision.route == Route.UNSUPPORTED_WRITE:
-            write_host, host_source, choices = self._resolve_write_host(text, state)
-            if choices:
-                return ServiceReply("hostが曖昧です: " + ", ".join(choices))
-            if write_host is None:
-                return ServiceReply("WRITE/Approval: 対象hostまたは具体的targetを確認してください。")
-            planner = getattr(self.agent, "plan_operation", None) if self.agent else None
-            if planner is None or self.actions is None:
-                return ServiceReply("WRITE/Approval operation planning capability unavailable")
-            investigation = await asyncio.to_thread(
-                self.agent.investigate, write_host.name, self._clean(text),
+            return await self._propose_generic_operation(text, owner, channel, state)
+
+        # Keyword tables above are latency fast paths, never the authority for understanding.
+        # In a fixed host context, a tool-free Gemini classifier can recover READ/WRITE/advice
+        # intent without selecting a host, target, parameter, command, or permission.
+        semantic_host = self._semantic_context_host(text, state)
+        classifier = getattr(self.agent, "classify_host_intent", None) if self.agent else None
+        if semantic_host is not None and classifier is not None and decision.route in {
+            Route.UNKNOWN, Route.AGENT,
+        }:
+            semantic = await asyncio.to_thread(
+                classifier, semantic_host.name, self._clean(text),
             )
-            plan = await asyncio.to_thread(
-                planner, write_host.name, host_source, self._clean(text), investigation,
-            )
-            if plan is None:
-                return ServiceReply("operation classification or target grounding is uncertain; clarification is required")
-            proposal = await asyncio.to_thread(self.actions.propose_operation, plan, str(owner))
-            state.last_host = write_host.name
-            state.write_context_host = None
-            self.conversations.save(owner, channel, state)
-            rendered = render_operation_proposal(plan, proposal.id, proposal.expires_at.isoformat())
-            if not self.actions.settings.generic_operations_enabled:
-                rendered += "\nPolicy: generic operation execution is disabled"
-            return ServiceReply(self._clean(rendered), proposal=proposal, policy="ALLOW")
+            if semantic == "WRITE":
+                return await self._propose_generic_operation(text, owner, channel, state)
+            if semantic in {"READ", "ADVICE"}:
+                decision.route = Route.AGENT
+                decision.host = semantic_host.name
+            elif semantic == "GENERAL":
+                answer = await asyncio.to_thread(self.agent.answer_general, self._clean(text))
+                state.write_context_host = None
+                self.conversations.save(owner, channel, state)
+                return ServiceReply(self._clean(answer))
+            else:
+                return ServiceReply("host operation intent is uncertain; READ、WRITE、または相談か確認してください。")
         host, choices = self._resolve_host(text, decision.host, state)
         if choices:
             return ServiceReply("hostが曖昧です: " + ", ".join(choices))
@@ -273,6 +274,34 @@ class AgentService:
                     )
         return ServiceReply(self._clean(f"Job #{job.id}\n{summary}"), job.id)
 
+    async def _propose_generic_operation(self, text, owner, channel, state) -> ServiceReply:
+        write_host, host_source, choices = self._resolve_write_host(text, state)
+        if choices:
+            return ServiceReply("hostが曖昧です: " + ", ".join(choices))
+        if write_host is None:
+            return ServiceReply("WRITE/Approval: 対象hostまたは具体的targetを確認してください。")
+        planner = getattr(self.agent, "plan_operation", None) if self.agent else None
+        if planner is None or self.actions is None:
+            return ServiceReply("WRITE/Approval operation planning capability unavailable")
+        investigation = await asyncio.to_thread(
+            self.agent.investigate, write_host.name, self._clean(text),
+        )
+        plan = await asyncio.to_thread(
+            planner, write_host.name, host_source, self._clean(text), investigation,
+        )
+        if plan is None:
+            return ServiceReply(
+                "operation classification or target grounding is uncertain; clarification is required",
+            )
+        proposal = await asyncio.to_thread(self.actions.propose_operation, plan, str(owner))
+        state.last_host = write_host.name
+        state.write_context_host = None
+        self.conversations.save(owner, channel, state)
+        rendered = render_operation_proposal(plan, proposal.id, proposal.expires_at.isoformat())
+        if not self.actions.settings.generic_operations_enabled:
+            rendered += "\nPolicy: generic operation execution is disabled"
+        return ServiceReply(self._clean(rendered), proposal=proposal, policy="ALLOW")
+
     @staticmethod
     def _is_cancel_request(text: str) -> bool:
         return (text == "止めて"
@@ -342,7 +371,7 @@ class AgentService:
         if len(matches) == 1:
             return matches[0], "current message", []
         concrete_target = bool(re.search(
-            r"GPU\s*[0-9]+|C\.[0-9]+|vast(?:ai)?\.service|docker\.service|libvirtd\.service",
+            r"GPU\s*[0-9]+|C\.[0-9]+|[A-Za-z0-9_.@-]+\.service",
             text, re.I,
         ))
         vague_only = folded.strip() in {"そっち", "それ", "あれ", "適当に", "そっち適当に絞って"}
@@ -354,6 +383,22 @@ class AgentService:
             except KeyError:
                 pass
         return None, None, []
+
+    def _semantic_context_host(self, text: str, state: ConversationState):
+        """Select only an explicit or immediate single-host context; never fleet authority."""
+        try:
+            explicit = self.registry.resolve_in_text(text)
+        except KeyError:
+            explicit = None
+        if explicit is not None:
+            return explicit
+        if (state.last_host and state.write_context_host == state.last_host
+                and not self._is_fleet(text.casefold())):
+            try:
+                return self.registry.resolve(state.last_host)
+            except KeyError:
+                return None
+        return None
 
     @staticmethod
     def _is_read_follow_up(text: str) -> bool:

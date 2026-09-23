@@ -1,5 +1,6 @@
 import json
 
+from vast_agent.actions.package_catalog import capability_definition
 from vast_agent.agent.functions import FunctionExecutor
 from vast_agent.agent.gemini import ScriptedGeminiClient
 from vast_agent.agent.models import AgentResponse
@@ -42,6 +43,7 @@ class CliRemote:
 
 
 def test_user_to_help_driven_vast_read_result(tmp_path, host):
+    assert capability_definition("vast_cli") is None
     db = Database(tmp_path / "db.sqlite")
     db.migrate()
     remote = CliRemote()

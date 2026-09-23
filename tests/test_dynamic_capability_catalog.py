@@ -26,8 +26,6 @@ def test_existing_capabilities_are_declarative_and_resolve_backends():
         "traffic_history": "query_traffic_history",
         "network_interface_details": "inspect_interface",
         "nvme_health": "query_nvme_health",
-        "gpu_diagnostics": "query_gpu_diagnostics",
-        "docker_diagnostics": "query_docker_diagnostics",
     }
     assert {item.capability_id: item.read_backend.tool_name
             for item in CAPABILITY_REGISTRY.definitions} == expected
@@ -122,6 +120,7 @@ def test_backend_unavailable_never_becomes_available():
 def test_prompt_vocabulary_is_registry_generated_and_bounded():
     assert all(item.capability_id in SYSTEM_PROMPT for item in CAPABILITY_REGISTRY.definitions)
     assert len(capability_prompt_block(max_chars=90)) <= 90
+    assert "metadata only, not a knowledge boundary" in capability_prompt_block()
 
 
 def test_acquisition_metadata_is_catalog_owned():
@@ -131,3 +130,15 @@ def test_acquisition_metadata_is_catalog_owned():
     registry = CapabilityRegistry((definition,))
     registry.validate()
     assert registry.get("sample").acquisition.package_name == "safe-package"
+
+
+def test_unknown_gap_is_free_form_missing_evidence_not_fake_acquisition():
+    from vast_agent.actions.package_catalog import capability_definition
+
+    assert capability_definition("unknown_host_tool") is None
+    result = InvestigationResult(
+        summary="tool syntax unavailable", missing_evidence=["unknown_host_tool safe READ syntax"],
+        confidence="low", recommended_action="NONE",
+    )
+    assert result.capability_gaps == []
+    assert "unknown_host_tool" in result.missing_evidence[0]

@@ -5,6 +5,7 @@ from vast_agent.actions.executor import TypedActionExecutor
 from vast_agent.actions.models import PreflightSnapshot, VerificationResult
 from vast_agent.actions.operation_plan import OperationPlan
 from vast_agent.agent.models import InvestigationResult
+from vast_agent.agent.router import WRITE_WORDS
 from vast_agent.config import HostRegistry, OperationsSettings
 from vast_agent.conversation.state import ConversationStore
 from vast_agent.jobs.manager import JobManager
@@ -51,8 +52,17 @@ class PlanningAgent:
             confidence="high", recommended_action="NONE",
         )
 
+    def classify_host_intent(self, host, message):
+        if "下げた方がいい" in message or "すべき" in message:
+            return "ADVICE"
+        if "状況" in message or "動いてる？" in message:
+            return "READ"
+        return "WRITE"
+
     def plan_operation(self, host, host_source, message, investigation):
         self.plans.append((host, host_source, message, investigation.summary))
+        if "foo.service" in message:
+            return None
         return OperationPlan(
             host=host, host_source=host_source, executable="nvidia-smi",
             argv=["-i", "0", "--lock-gpu-clocks=1500,1500"], requires_sudo=True,
@@ -92,7 +102,8 @@ def test_gpu_clock_write_inherits_high_confidence_host_and_proposes(tmp_path):
     first = asyncio.run(app.handle_question("h12sslの状況は？GPU動いてる？", 7, 9))
     assert first.job_id is not None
 
-    message = "GPU0がマイナーか、クロック制限掛けて消費電力を300W位まで絞って、PLじゃなくクロック制限の方ね"
+    message = "GPU0ちょっと抑えて。PLじゃなくて300Wくらいにしたい"
+    assert not any(word in message.casefold() for word in WRITE_WORDS)
     reply = asyncio.run(app.handle_question(message, 7, 9))
 
     assert reply.proposal is not None
@@ -104,6 +115,25 @@ def test_gpu_clock_write_inherits_high_confidence_host_and_proposes(tmp_path):
     assert db.pending_approval_count() == 1
     assert not any("--lock-gpu-clocks" in " ".join(call) for call in remote.calls)
     assert agent.plans[0][:3] == ("garage-h12ssl-nt", "conversation context", message)
+
+
+def test_semantic_advice_never_creates_proposal(tmp_path):
+    app, agent, db, _ = service(tmp_path)
+    reply = asyncio.run(app.handle_question("h12sslのGPU0少し下げた方がいい？", 7, 9))
+    assert reply.proposal is None
+    assert reply.job_id is not None
+    assert db.pending_approval_count() == 0
+    assert agent.plans == []
+
+
+def test_explicit_host_unknown_service_write_uses_semantic_fallback(tmp_path):
+    app, agent, _, _ = service(tmp_path)
+    # The fake planner uses a GPU plan and is correctly rejected because its host is fixed but
+    # its GPU target was not grounded in this service request. Routing still reached planning.
+    reply = asyncio.run(app.handle_question("h12sslのfoo.serviceを動かし直して", 7, 9))
+    assert reply.proposal is None
+    assert "grounding is uncertain" in reply.text
+    assert agent.investigations[-1][0] == "garage-h12ssl-nt"
 
 
 def test_context_does_not_invent_target_or_reuse_fleet_context(tmp_path):

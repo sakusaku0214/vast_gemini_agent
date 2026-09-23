@@ -35,7 +35,7 @@ class CapabilityPrerequisites:
 
 @dataclass(frozen=True)
 class CapabilityDefinition:
-    """One code-owned high-level capability; never populated from model/user input."""
+    """One code-owned acquisition mapping; never permission or model knowledge."""
 
     capability_id: str
     description: str
@@ -81,7 +81,8 @@ class CapabilityDefinition:
 CapabilityPackageDefinition = CapabilityDefinition
 
 
-class CapabilityRegistry:
+class AcquisitionMetadataRegistry:
+    """Known package acquisition mappings; never permission or an NLU boundary."""
     _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
     _PACKAGE = re.compile(r"^[a-z0-9][a-z0-9+.-]*$")
     _EXECUTABLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
@@ -131,19 +132,12 @@ class CapabilityRegistry:
                     raise ValueError(f"read backend is not READ_ONLY: {backend.tool_name}")
 
 
+# Compatibility alias for callers/configuration from before the responsibility split.
+CapabilityRegistry = AcquisitionMetadataRegistry
+
+
+# Compatibility name retained; this tuple intentionally contains only acquisition-backed gaps.
 CAPABILITY_DEFINITIONS = (
-    CapabilityDefinition(
-        "gpu_diagnostics", "bounded GPU health and ownership diagnostics", "gpu",
-        ReadBackendDefinition("query_gpu_diagnostics"),
-        prerequisites=CapabilityPrerequisites(optional_host_capabilities=("nvidia",)),
-        safety_notes="READ-only PCI/NVML evidence; no reset or remediation is performed.",
-    ),
-    CapabilityDefinition(
-        "docker_diagnostics", "bounded Docker service and workload diagnostics", "containers",
-        ReadBackendDefinition("query_docker_diagnostics"),
-        prerequisites=CapabilityPrerequisites(required_host_capabilities=("docker",)),
-        safety_notes="READ-only service and container summaries; no container mutation is performed.",
-    ),
     CapabilityDefinition(
         "traffic_history", "historical network traffic", "network",
         ReadBackendDefinition("query_traffic_history"),
@@ -161,7 +155,7 @@ CAPABILITY_DEFINITIONS = (
     ),
 )
 
-CAPABILITY_REGISTRY = CapabilityRegistry(CAPABILITY_DEFINITIONS)
+CAPABILITY_REGISTRY = AcquisitionMetadataRegistry(CAPABILITY_DEFINITIONS)
 CAPABILITY_REGISTRY.validate()
 CAPABILITY_PACKAGES = tuple(item for item in CAPABILITY_DEFINITIONS if item.acquisition)
 PACKAGES_BY_NAME = {item.acquisition.package_name: item for item in CAPABILITY_PACKAGES if item.acquisition}
