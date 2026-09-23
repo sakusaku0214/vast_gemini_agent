@@ -29,7 +29,7 @@ from vast_agent.conversation.state import ConversationState, ConversationStore
 from vast_agent.diagnostics.parser import summarize_docker_status, summarize_vm_status
 from vast_agent.execution.base import redact
 from vast_agent.jobs.cancellation import current_cancellation
-from vast_agent.jobs.locks import LockClass
+from vast_agent.jobs.locks import LockAcquisitionCancelled, LockClass
 from vast_agent.jobs.manager import JobManager
 from vast_agent.services.inspection import InspectionService
 
@@ -200,7 +200,7 @@ class AgentService:
         def work():
             context = current_cancellation.set(token)
             try:
-                with self.jobs.locks.acquire(host.name, lock_class):
+                with self.jobs.locks.acquire(host.name, lock_class, token):
                     if token.cancelled: return "cancelled"
                     if decision.route == Route.AGENT:
                         if self.agent is None: return "Gemini unavailable: GEMINI_API_KEY is not configured."
@@ -208,6 +208,8 @@ class AgentService:
                         return result
                     record = self.inspection.inspect_and_record(host, self.executor, decision.scope, token)
                     return self._format_observation(record.observation, decision.scope)
+            except LockAcquisitionCancelled:
+                return "cancelled"
             finally:
                 current_cancellation.reset(context)
         try:
@@ -509,7 +511,9 @@ class AgentService:
                 def investigate_host():
                     context = current_cancellation.set(token)
                     try:
-                        with self.jobs.locks.acquire(host.name, LockClass.HEAVY_READ):
+                        with self.jobs.locks.acquire(
+                            host.name, LockClass.HEAVY_READ, token,
+                        ):
                             if token.cancelled:
                                 return None
                             return self._call_investigate(host.name, request, {})
@@ -517,6 +521,8 @@ class AgentService:
                         current_cancellation.reset(context)
                 try:
                     return host.name, await asyncio.to_thread(investigate_host), None
+                except LockAcquisitionCancelled:
+                    return host.name, None, "cancelled"
                 except Exception:
                     return host.name, None, "investigation failed"
 
@@ -572,12 +578,14 @@ class AgentService:
             async with semaphore:
                 if token.cancelled: return f"{host.name:<20} CANCELLED"
                 def inspect():
-                    with self.jobs.locks.acquire(host.name, LockClass.HEAVY_READ):
+                    with self.jobs.locks.acquire(host.name, LockClass.HEAVY_READ, token):
                         if token.cancelled:
                             return None
                         return self.inspection.inspect_and_record(host, self.executor, scope, token).observation
                 try:
                     observation = await asyncio.to_thread(inspect)
+                except LockAcquisitionCancelled:
+                    return f"{host.name:<20} CANCELLED"
                 except Exception:
                     return f"{host.name:<20} ERROR inspection failed"
                 if observation is None: return f"{host.name:<20} CANCELLED"
