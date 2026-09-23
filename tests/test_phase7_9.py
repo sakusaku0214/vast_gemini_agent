@@ -406,8 +406,10 @@ def test_ssh_known_hosts_option_has_no_embedded_quotes(tmp_path, monkeypatch, ho
         for i, value in enumerate(captured["args"][:-1])
         if value == "-o" and captured["args"][i + 1].startswith("UserKnownHostsFile=")
     )
-    assert option == f"UserKnownHostsFile={known.resolve().as_posix()}"
+    expected = known.resolve().as_posix().replace("\\", "\\\\").replace(" ", "\\ ")
+    assert option == f"UserKnownHostsFile={expected}"
     assert '"' not in option
+    assert "\\ " in option
 
 
 
