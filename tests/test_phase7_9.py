@@ -516,3 +516,47 @@ def test_failed_agent_turn_is_not_reused_as_context(tmp_path):
     assert seen[0] is None
     assert seen[1] is None
     assert "ok" in second.text
+
+
+
+def test_gateway_attaches_continue_view_only_to_handoff_reply():
+    class Service:
+        async def handle_question(self, *args):
+            return ServiceReply(
+                "ここまでに確認できたデータ\n"
+                "さらに深掘りしますか？ 続ける場合は「続けて」と返信してください。",
+                77,
+            )
+
+    class ViewFactory:
+        def __init__(self):
+            self.jobs = []
+
+        def __call__(self, job_id):
+            self.jobs.append(job_id)
+            return {"job_id": job_id}
+
+    class Channel:
+        def __init__(self):
+            self.id = 20
+            self.sent = []
+
+        async def send(self, text, **kwargs):
+            self.sent.append((text, kwargs))
+
+    item = SimpleNamespace(
+        author=SimpleNamespace(id=10, bot=False),
+        channel=Channel(),
+        content="調べて",
+    )
+    factory = ViewFactory()
+    gateway = DiscordGateway(DiscordGuard(10, 20), Service(), factory)
+
+    async def run():
+        await gateway.on_message(item)
+        await gateway.drain()
+
+    asyncio.run(run())
+
+    assert factory.jobs == [77]
+    assert item.channel.sent[-1][1]["view"] == {"job_id": 77}
