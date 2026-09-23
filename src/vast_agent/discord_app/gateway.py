@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from vast_agent.discord_app.formatting import split_messages
+from vast_agent.discord_app.formatting import split_messages, wants_continue_button
 
 
 class DiscordGateway:
     """Framework-light message adapter, directly testable with fake Discord objects."""
 
-    def __init__(self, guard, service) -> None:
+    def __init__(self, guard, service, continue_view_factory=None) -> None:
         self.guard = guard; self.service = service
+        self.continue_view_factory = continue_view_factory
         self._tasks: set[asyncio.Task] = set()
         self.log = logging.getLogger("vast_agent.discord")
 
@@ -25,8 +26,20 @@ class DiscordGateway:
             reply = await self.service.handle_question(
                 message.content, message.author.id, message.channel.id,
             )
-            for chunk in split_messages(reply.text):
-                await message.channel.send(chunk)
+            chunks = split_messages(reply.text)
+            show_continue = (
+                self.continue_view_factory is not None
+                and reply.job_id is not None
+                and wants_continue_button(reply.text)
+            )
+            for index, chunk in enumerate(chunks):
+                if show_continue and index == len(chunks) - 1:
+                    await message.channel.send(
+                        chunk,
+                        view=self.continue_view_factory(reply.job_id),
+                    )
+                else:
+                    await message.channel.send(chunk)
         except Exception:
             self.log.exception("Discord request failed")
             await message.channel.send("リクエスト処理に失敗しました。詳細はagent logを確認してください。")
